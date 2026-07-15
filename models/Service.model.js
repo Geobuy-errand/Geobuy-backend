@@ -17,6 +17,7 @@ const serviceSchema = new mongoose.Schema(
         'alcohol',
         'food_pickup',
         'parcel_delivery',
+        'basic_care_and_support',
         'document_delivery',
         'dry_cleaning',
         'key_collection',
