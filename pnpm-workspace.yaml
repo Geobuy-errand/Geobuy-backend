@@ -1,0 +1,3 @@
+allowBuilds:
+  bcrypt: false
+  core-js: false
