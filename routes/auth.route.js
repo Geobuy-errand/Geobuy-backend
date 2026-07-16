@@ -3,10 +3,10 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const User = require('../models/User.model');
 const ProviderProfile = require('../models/ProviderProfile.model');
-const Wallet = require('../models/Wallet.model');
 const { validate, userValidationRules } = require('../middleware/validation');
 const { authMiddleware } = require('../middleware/auth.middleware');
 const AuthController = require('../controllers/auth.controller');
+const Wallet = require('../models/Wallet.model');
 
 // Register Customer
 router.post(
@@ -70,7 +70,7 @@ router.post(
       await providerProfile.save();
 
       // Create wallet
-      const wallet = new Wallet({
+      const wallet = new walletModel({
         userId: user._id,
       });
 
