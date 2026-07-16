@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const Wallet = require('../models/wallet.model');
+const Wallet = require('../models/Wallet.model');
 const Withdrawal = require('../models/Withdrawal.model');
 const Payment = require('../models/Payment.model');
 const { authMiddleware, requireRole } = require('../middleware/auth.middleware');

@@ -1,10 +1,10 @@
 const mongoose = require('mongoose');
 require('dotenv').config();
-const User = require('./models/User');
-const Service = require('./models/Service');
-const Booking = require('./models/Booking');
-const ProviderProfile = require('./models/ProviderProfile');
-const Wallet = require('./models/Wallet');
+const User = require('./models/User.model');
+const Service = require('./models/Service.model');
+const Booking = require('./models/Booking.model');
+const ProviderProfile = require('./models/ProviderProfile.model');
+const Wallet = require('./models/Wallet.model');
 
 const seedDatabase = async () => {
   try {
@@ -23,9 +23,9 @@ const seedDatabase = async () => {
     // Create admin user
     const admin = new User({
       fullName: 'Admin User',
-      email: 'admin@geobuy.com',
+      email: 'admin@gmail.com',
       phoneNumber: '07700900000',
-      password: 'Admin123!',
+      password: 'admin',
       role: 'admin',
       isActive: true,
       isVerified: true,
@@ -262,11 +262,11 @@ const seedDatabase = async () => {
     console.log('Sample bookings created');
 
     console.log('✅ Database seeded successfully!');
-    process.exit(0);
+    // process.exit(0);
   } catch (error) {
     console.error('Seeding error:', error);
-    process.exit(1);
+    // process.exit(1);
   }
 };
 
-seedDatabase();
+module.exports = seedDatabase;

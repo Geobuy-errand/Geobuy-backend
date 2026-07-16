@@ -20,6 +20,7 @@ const serviceRoutes = require('./routes/service.route');
 const walletRoutes = require('./routes/wallet.route');
 const adminRoutes = require('./routes/admin.route');
 const uploadRoutes = require('./routes/upload.route');
+const seedDatabase = require('./seed');
 
 const app = express();
 
@@ -72,6 +73,18 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/upload', uploadRoutes);
 
 // Health check
+
+app.get('/api/seed', async (req, res) => {
+  try {
+    console.log('API seed route triggered...');
+    await seedDatabase();
+    res.status(200).json({ status: 'success', message: 'Database seeded successfully!' });
+  } catch (error) {
+    console.error('Seed route failed:', error);
+    res.status(500).json({ status: 'error', message: 'Seeding failed', error: error.message });
+  }
+});
+
 app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', message: 'GEOBUY Errands API is running' });
 });

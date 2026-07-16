@@ -4,7 +4,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const Payment = require('../models/Payment.model');
 const Booking = require('../models/Booking.model');
 const User = require('../models/User.model');
-const Wallet = require('../models/wallet.model');
+const Wallet = require('../models/Wallet.model');
 const Notification = require('../models/Notification.model');
 const { authMiddleware, requireRole } = require('../middleware/auth.middleware');
 

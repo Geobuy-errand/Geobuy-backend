@@ -3,7 +3,7 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const User = require('../models/User.model');
 const ProviderProfile = require('../models/ProviderProfile.model');
-const Wallet = require('../models/wallet.model');
+const Wallet = require('../models/Wallet.model');
 const { validate, userValidationRules } = require('../middleware/validation');
 const { authMiddleware } = require('../middleware/auth.middleware');
 const AuthController = require('../controllers/auth.controller');
@@ -168,7 +168,7 @@ router.post('/logout', (req, res) => {
   res.clearCookie('token', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
   });
   res.json({ message: 'Logged out successfully' });
 });
