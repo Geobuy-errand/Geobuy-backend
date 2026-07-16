@@ -70,7 +70,7 @@ router.post(
       await providerProfile.save();
 
       // Create wallet
-      const wallet = new walletModel({
+      const wallet = new Wallet({
         userId: user._id,
       });
 
