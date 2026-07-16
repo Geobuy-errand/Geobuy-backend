@@ -7,7 +7,68 @@ const Payment = require('../models/Payment.model');
 const Review = require('../models/Review.model');
 const Notification = require('../models/Notification.model');
 const { authMiddleware, requireRole } = require('../middleware/auth.middleware');
+const { validate, userValidationRules } = require('../middleware/validation');
 
+router.post('/login', validate(userValidationRules.login), async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const user = await User.findOne({ email }).select('+password');
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    if(user.role !== 'admin'){
+      return res.status(401).json({message: 'Forbidden'})
+    }
+
+    if (!user.isActive) {
+      return res.status(403).json({ message: 'Account is deactivated' });
+    }
+
+    const isPasswordValid = await user.comparePassword(password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+
+    // Check if provider is verified
+    if (user.role === 'provider' && user.verificationStatus !== 'approved') {
+      return res.status(403).json({
+        message: 'Your account is not verified yet. Please wait for admin approval.',
+        verificationStatus: user.verificationStatus,
+      });
+    }
+
+    // Generate JWT
+    const token = jwt.sign(
+      { userId: user._id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRE || '7d' }
+    );
+
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.json({
+      message: 'Login successful',
+      user: {
+        id: user._id,
+        fullName: user.fullName,
+        email: user.email,
+        role: user.role,
+        isVerified: user.isVerified,
+        verificationStatus: user.verificationStatus,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
 // Dashboard stats
 router.get('/dashboard/stats', authMiddleware, requireRole('admin'), async (req, res) => {
   try {
