@@ -136,22 +136,32 @@ router.get('/dashboard/stats', authMiddleware, requireRole('admin'), async (req,
 // Get all users (admin)
 router.get('/users', authMiddleware, requireRole('admin'), async (req, res) => {
   try {
-    const { role, status, search } = req.query;
-    const query = {};
-
-    if (role) query.role = role;
-    if (status === 'active') query.isActive = true;
-    if (status === 'inactive') query.isActive = false;
-    if (search) {
-      query.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    const users = await User.find(query)
-      .select('-password')
-      .sort({ createdAt: -1 });
+  ]const { role, status, search } = req.query;
+  const query = {};
+  
+  // 1. Set the default rule: Exclude admins
+  query.role = { $ne: 'admin' };
+  
+  // 2. Only narrow down by role if it's explicitly 'customer' or 'provider'
+  if (role && role !== 'admin') {
+    query.role = role;
+  } 
+  // If role === 'admin', the code falls through here, keeping query.role = { $ne: 'admin' }
+  
+  if (status === 'active') query.isActive = true;
+  if (status === 'inactive') query.isActive = false;
+  
+  if (search) {
+    query.$or = [
+      { fullName: { $regex: search, $options: 'i' } },
+      { email: { $regex: search, $options: 'i' } },
+    ];
+  }
+  
+  const users = await User.find(query)
+    .select('-password')
+    .sort({ createdAt: -1 });
+  
 
     res.json(users);
   } catch (error) {
