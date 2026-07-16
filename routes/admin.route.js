@@ -136,7 +136,7 @@ router.get('/dashboard/stats', authMiddleware, requireRole('admin'), async (req,
 // Get all users (admin)
 router.get('/users', authMiddleware, requireRole('admin'), async (req, res) => {
   try {
-  ]const { role, status, search } = req.query;
+  const { role, status, search } = req.query;
   const query = {};
   
   // 1. Set the default rule: Exclude admins
