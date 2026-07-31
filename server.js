@@ -20,7 +20,13 @@ const serviceRoutes = require('./routes/service.route');
 const walletRoutes = require('./routes/wallet.route');
 const adminRoutes = require('./routes/admin.route');
 const uploadRoutes = require('./routes/upload.route');
+const errandRoutes = require('./routes/errand.route');
+const verificationRoutes = require('./routes/verification.route');
+const commissionRoutes = require('./routes/commission.route');
+
+
 const seedDatabase = require('./seed');
+
 
 const app = express();
 
@@ -67,10 +73,14 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/reviews', reviewRoutes);
-app.use('/api/services', serviceRoutes);
+// app.use('/api/services', serviceRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/errands', errandRoutes);
+app.use('/api/services', serviceRoutes);
+app.use('/api/verifications', verificationRoutes);
+app.use('/api/commissions', commissionRoutes);
 
 // Health check
 

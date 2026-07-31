@@ -98,6 +98,100 @@ const userSchema = new mongoose.Schema(
         default: [0, 0],
       },
     },
+    serviceCategories: [
+      {
+        type: String,
+        enum: ['care', 'trades', 'professional', 'personal', 'other'],
+      }
+    ],
+    serviceArea: {
+      postcodes: [String],
+      radius: Number, // in miles
+    },
+    travelType: {
+      type: String,
+      enum: ['walking', 'cycling', 'driving'],
+      default: 'driving',
+    },
+    dbsStatus: {
+      type: String,
+      enum: ['clear', 'pending', 'expired', 'not_submitted'],
+      default: 'not_submitted',
+    },
+    dbsNumber: String,
+    dbsExpiry: Date,
+    insuranceStatus: {
+      type: String,
+      enum: ['active', 'expired', 'not_insured'],
+      default: 'not_insured',
+    },
+    insuranceProvider: String,
+    insuranceExpiry: Date,
+    certifications: [
+      {
+        name: String,
+        number: String,
+        issuedBy: String,
+        issueDate: Date,
+        expiryDate: Date,
+        documentUrl: String,
+        verified: {
+          type: Boolean,
+          default: false,
+        },
+      }
+    ],
+    verificationBadges: [
+      {
+        type: String,
+        enum: ['id_checked', 'dbs_checked', 'certified', 'insured'],
+      }
+    ],
+    availabilitySchedule: [
+      {
+        day: {
+          type: String,
+          enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+        },
+        startTime: String,
+        endTime: String,
+        isAvailable: {
+          type: Boolean,
+          default: true,
+        },
+      }
+    ],
+    savedLocations: [
+      {
+        name: String,
+        address: String,
+        street: String,
+        town: String,
+        postcode: String,
+        coordinates: {
+          lat: Number,
+          lng: Number,
+        },
+        isDefault: {
+          type: Boolean,
+          default: false,
+        },
+      }
+    ],
+    serviceRates: {
+      hourlyRate: Number,
+      fixedRate: Number,
+      rateType: {
+        type: String,
+        enum: ['hourly', 'fixed', 'negotiable'],
+        default: 'negotiable',
+      },
+    },
+    serviceTerms: {
+      cancellationPolicy: String,
+      noticePeriod: Number, // hours
+      travelFee: Number,
+    },
   },
   {
     timestamps: true,
