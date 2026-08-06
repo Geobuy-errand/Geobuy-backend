@@ -200,7 +200,6 @@ exports.getServiceProviders = async (req, res) => {
         },
       };
     }
-    console.log("service providers", query, {lng, lat, radius, category})
 
 
     providers = await User.find(query)

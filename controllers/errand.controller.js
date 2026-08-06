@@ -91,13 +91,17 @@ exports.createErrand = async (req, res) => {
       preferredTime,
       requiresLiveTracking,
       photos,
+      // New pricing fields
+      isHeavyItem,
+      isPeakUrgent,
+      extraStopsCount,
+      waitTimeMinutes,
     } = req.body;
 
     // ============================================================
     // STEP 1: Validate UK Addresses
     // ============================================================
     
-    // Validate pickup address
     if (!pickup || !pickup.address) {
       return res.status(400).json({
         message: 'Pickup address is required',
@@ -110,11 +114,9 @@ exports.createErrand = async (req, res) => {
       return res.status(400).json({
         message: 'Invalid pickup address. Please enter a valid UK address.',
         error: pickupValidation.error,
-        suggestion: 'Check the address format and try again (e.g., "10 Downing Street, London")',
       });
     }
 
-    // Validate dropoff address (if provided)
     let dropoffValidation = null;
     if (dropoff && dropoff.address) {
       dropoffValidation = await NominatimService.validateUKAddress(dropoff.address);
@@ -123,19 +125,16 @@ exports.createErrand = async (req, res) => {
         return res.status(400).json({
           message: 'Invalid dropoff address. Please enter a valid UK address.',
           error: dropoffValidation.error,
-          suggestion: 'Check the address format and try again (e.g., "10 Downing Street, London")',
         });
       }
     } else {
-      // Dropoff is required for errands with distance-based pricing
       return res.status(400).json({
         message: 'Dropoff address is required for distance calculation.',
-        suggestion: 'Please provide both pickup and dropoff addresses.',
       });
     }
 
     // ============================================================
-    // STEP 2: Calculate Distance using OSRM (Free)
+    // STEP 2: Calculate Distance using OSRM
     // ============================================================
     
     const distanceResult = await OSRMService.getDistance(
@@ -146,8 +145,8 @@ exports.createErrand = async (req, res) => {
     );
 
     const distanceInMiles = distanceResult.distance.value;
-    const travelDurationMinutes = distanceResult.duration.value; // Extract the number value
-    const travelDurationText = distanceResult.duration.text; // Extract the formatted text
+    const travelDurationMinutes = distanceResult.duration.value;
+    const travelDurationText = distanceResult.duration.text;
 
     // ============================================================
     // STEP 3: Get User's Subscription Status
@@ -157,35 +156,7 @@ exports.createErrand = async (req, res) => {
     const isSubscribed = user?.subscription?.isSubscribed || false;
 
     // ============================================================
-    // STEP 4: Calculate Pricing
-    // ============================================================
-    
-    // Pricing constants
-    const BASE_FEE = 3.50;
-    const DISTANCE_FEE_PER_MILE = 1.60;
-    const SUBSCRIPTION_DISCOUNT = 20; // 20%
-    
-    // Calculate subtotal
-    const distanceFee = distanceInMiles * DISTANCE_FEE_PER_MILE;
-    const subtotal = distanceFee + BASE_FEE;
-    
-    // Apply subscription discount if applicable
-    let discountPercentage = 0;
-    let discountAmount = 0;
-    let total = subtotal;
-
-    if (isSubscribed) {
-      discountPercentage = SUBSCRIPTION_DISCOUNT;
-      discountAmount = Math.round((subtotal * discountPercentage) / 100 * 100) / 100;
-      total = Math.round((subtotal - discountAmount) * 100) / 100;
-    }
-
-    // Calculate platform fee (10% of total)
-    const platformFee = Math.round(total * 0.1 * 100) / 100;
-    const providerAmount = Math.round((total - platformFee) * 100) / 100;
-
-    // ============================================================
-    // STEP 5: Create Errand - FIXED duration fields
+    // STEP 4: Create Errand with Pricing
     // ============================================================
     
     const errand = new Errand({
@@ -215,27 +186,23 @@ exports.createErrand = async (req, res) => {
       status: 'pending',
       distance: Math.round(distanceInMiles * 100) / 100,
       distanceText: distanceResult.distance.text,
-      duration: Math.round(travelDurationMinutes * 100) / 100, // Now storing as a number
-      durationText: travelDurationText, // Store the formatted text
-      baseFee: BASE_FEE,
-      distanceFeePerMile: DISTANCE_FEE_PER_MILE,
-      distanceFee: Math.round(distanceFee * 100) / 100,
-      subtotal: Math.round(subtotal * 100) / 100,
-      discountPercentage,
-      discountAmount,
-      total: Math.round(total * 100) / 100,
-      platformFee,
-      providerAmount,
+      duration: Math.round(travelDurationMinutes * 100) / 100,
+      durationText: travelDurationText,
+      // New pricing fields
+      isHeavyItem: isHeavyItem || false,
+      isPeakUrgent: isPeakUrgent || false,
+      extraStopsCount: extraStopsCount || 0,
+      waitTimeMinutes: waitTimeMinutes || 0,
       isSubscribed,
     });
 
+    // Pricing is calculated in the pre-save middleware
     await errand.save();
 
     // ============================================================
-    // STEP 6: Find and Notify Nearby Providers
+    // STEP 5: Find and Notify Nearby Providers
     // ============================================================
     
-    // Get all active providers
     const providers = await User.find({
       role: 'provider',
       isActive: true,
@@ -246,20 +213,17 @@ exports.createErrand = async (req, res) => {
     let nearestProviders = [];
 
     if (providers.length > 0) {
-      // Prepare provider coordinates for batch distance calculation
       const providerCoords = providers.map(p => ({
         lat: p.location?.coordinates?.[1] || 51.5074,
         lon: p.location?.coordinates?.[0] || -0.1276,
       }));
 
-      // Calculate distances from pickup to each provider
       const distances = await OSRMService.getBatchDistances(
         pickupValidation.coordinates.lat,
         pickupValidation.coordinates.lon,
         providerCoords
       );
 
-      // Sort providers by distance and get nearest 5
       const sortedProviders = providers.map((provider, index) => ({
         ...provider.toObject(),
         distance: distances[index]?.distance || 999,
@@ -286,23 +250,29 @@ exports.createErrand = async (req, res) => {
             distance: provider.distanceText,
             duration: provider.durationText,
             serviceType,
+            estimatedPrice: errand.total,
           },
         });
         await notification.save();
 
-        // Emit socket event for real-time notification
-        const io = req.app.get('io');
-        io.to(`user_${provider._id}`).emit('new-errand-available', {
-          errandId: errand._id,
-          serviceType,
-          distance: provider.distanceText,
-          duration: provider.durationText,
-          pickup: pickup.address,
-          estimatedPrice: total,
-        });
+        // Emit socket event
+        try {
+          const io = req.app.get('io');
+          if (io) {
+            io.to(`user_${provider._id}`).emit('new-errand-available', {
+              errandId: errand._id,
+              serviceType,
+              distance: provider.distanceText,
+              duration: provider.durationText,
+              pickup: pickup.address,
+              estimatedPrice: errand.total,
+            });
+          }
+        } catch (socketError) {
+          console.warn('Socket emit error:', socketError.message);
+        }
       }
 
-      // Store matched providers on the errand
       errand.matchedProviders = nearestProviders.map(p => ({
         providerId: p._id,
         distance: p.distance,
@@ -313,7 +283,7 @@ exports.createErrand = async (req, res) => {
     }
 
     // ============================================================
-    // STEP 7: Response
+    // STEP 6: Response with Full Price Breakdown
     // ============================================================
     
     res.status(201).json({
@@ -323,24 +293,30 @@ exports.createErrand = async (req, res) => {
         distance: {
           miles: Math.round(distanceInMiles * 100) / 100,
           text: distanceResult.distance.text,
+          ratePerMile: errand.distanceRate,
         },
         duration: {
           minutes: Math.round(travelDurationMinutes * 100) / 100,
           text: travelDurationText,
         },
-        pricing: {
-          baseFee: BASE_FEE,
-          distanceFee: Math.round(distanceFee * 100) / 100,
-          subtotal: Math.round(subtotal * 100) / 100,
-          discountPercentage: isSubscribed ? SUBSCRIPTION_DISCOUNT : 0,
-          discountAmount: discountAmount,
-          total: Math.round(total * 100) / 100,
-          platformFee: platformFee,
-          providerAmount: providerAmount,
+        baseFee: errand.baseFee,
+        distanceFee: errand.distanceFee,
+        additionalCharges: {
+          heavyItem: errand.isHeavyItem ? errand.heavyItemFee : null,
+          waitTime: errand.waitTimeMinutes > 5 ? errand.waitTimeFee : null,
+          peakUrgent: errand.isPeakUrgent ? errand.peakUrgentFee : null,
+          extraStops: errand.extraStopsCount > 0 ? errand.extraStopsFee : null,
         },
+        subtotal: errand.subtotal,
         subscription: {
-          isSubscribed,
-          savings: isSubscribed ? discountAmount : 0,
+          isSubscribed: errand.isSubscribed,
+          discountPercentage: errand.discountPercentage,
+          discountAmount: errand.discountAmount,
+        },
+        total: errand.total,
+        revenueSplit: {
+          geobuyFee: errand.platformFee,
+          providerAmount: errand.providerAmount,
         },
       },
       nearestProviders: nearestProviders.map(p => ({
@@ -407,18 +383,21 @@ exports.acceptErrand = async (req, res) => {
 };
 
 // Update errand status
+// Update errand status with socket emission
 exports.updateErrandStatus = async (req, res) => {
   try {
     const { status, location } = req.body;
-    const errand = await Errand.findById(req.params.id);
+    const errand = await Errand.findById(req.params.id)
+      .populate('customerId', 'fullName email')
+      .populate('providerId', 'fullName email phoneNumber');
 
     if (!errand) {
       return res.status(404).json({ message: 'Errand not found' });
     }
 
     // Check authorization
-    const isCustomer = errand.customerId.toString() === req.user._id.toString();
-    const isProvider = errand.providerId && errand.providerId.toString() === req.user._id.toString();
+    const isCustomer = errand.customerId._id.toString() === req.user._id.toString();
+    const isProvider = errand.providerId && errand.providerId._id.toString() === req.user._id.toString();
 
     if (!isCustomer && !isProvider && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Access denied' });
@@ -429,7 +408,8 @@ exports.updateErrandStatus = async (req, res) => {
       accepted: ['en_route', 'cancelled'],
       en_route: ['collected', 'cancelled'],
       collected: ['delivered', 'cancelled'],
-      delivered: [],
+      delivered: ['completed'],
+      completed: [],
       cancelled: [],
     };
 
@@ -439,12 +419,12 @@ exports.updateErrandStatus = async (req, res) => {
 
     errand.status = status;
     
-    // Update timestamps
     const statusMap = {
       accepted: 'acceptedAt',
       en_route: 'enRouteAt',
       collected: 'collectedAt',
       delivered: 'deliveredAt',
+      completed: 'completedAt',
       cancelled: 'cancelledAt',
     };
     
@@ -452,7 +432,6 @@ exports.updateErrandStatus = async (req, res) => {
       errand[statusMap[status]] = new Date();
     }
 
-    // Add location update
     if (location) {
       errand.locationUpdates.push({
         lat: location.lat,
@@ -464,49 +443,99 @@ exports.updateErrandStatus = async (req, res) => {
 
     await errand.save();
 
-    // Notify other party
-    const recipientId = isCustomer ? errand.providerId : errand.customerId;
-    if (recipientId) {
-      const notification = new Notification({
-        userId: recipientId,
-        type: `booking_${status}`,
-        title: `Errand ${status}`,
-        message: `Errand #${errand.errandId} is now ${status}`,
-        data: { errandId: errand._id },
-      });
-      await notification.save();
+    // Get payment info if completed
+    let paymentInfo = null;
+    if (status === 'completed') {
+      paymentInfo = await Payment.findOne({ errandId: errand._id });
     }
 
-    // Emit socket event
+    // Create notification
+    const recipientId = isCustomer ? errand.providerId?._id : errand.customerId._id;
+    if (recipientId) {
+      await createNotification(
+        recipientId,
+        `errand_${status}`,
+        `Errand ${status}`,
+        `Errand #${errand.errandId} is now ${status}`,
+        { errandId: errand._id, status }
+      );
+    }
+
+    // Emit socket events to all relevant parties
     const io = req.app.get('io');
-    io.to(`errand_${errand._id}`).emit('errand-status-updated', {
-      errandId: errand._id,
-      status,
-      location,
-    });
+    if (io) {
+      // Customer
+      io.to(`user_${errand.customerId._id}`).emit('errand-status-updated', {
+        errandId: errand._id,
+        status: status,
+        location: location,
+        timestamp: new Date(),
+        errand: errand,
+      });
+
+      // Provider
+      if (errand.providerId) {
+        io.to(`user_${errand.providerId._id}`).emit('errand-status-updated', {
+          errandId: errand._id,
+          status: status,
+          location: location,
+          timestamp: new Date(),
+          errand: errand,
+        });
+      }
+
+      // Admin
+      io.to('admin_room').emit('errand-status-updated', {
+        errandId: errand._id,
+        status: status,
+        customerId: errand.customerId._id,
+        providerId: errand.providerId?._id,
+        timestamp: new Date(),
+        errand: {
+          errandId: errand.errandId,
+          serviceType: errand.serviceType,
+          pickup: errand.pickup,
+          dropoff: errand.dropoff,
+          total: errand.total,
+        },
+      });
+
+      // Errand room
+      io.to(`errand_${errand._id}`).emit('errand-status-updated', {
+        errandId: errand._id,
+        status: status,
+        location: location,
+        timestamp: new Date(),
+      });
+
+      // If completed, emit completion event
+      if (status === 'completed') {
+        io.to('admin_room').emit('errand-completed', {
+          errandId: errand._id,
+          errandId: errand.errandId,
+          customerId: errand.customerId._id,
+          providerId: errand.providerId?._id,
+          total: errand.total,
+          paymentId: paymentInfo?._id,
+          timestamp: new Date(),
+        });
+
+        // Send provider rating notification
+        io.to(`user_${errand.customerId._id}`).emit('rate-provider', {
+          errandId: errand._id,
+          providerId: errand.providerId?._id,
+          providerName: errand.providerId?.fullName,
+        });
+      }
+    }
 
     res.json({
-      message: 'Errand status updated',
+      message: `Errand ${status} successfully`,
       errand,
     });
+
   } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
-
-// Get errand by ID
-exports.getErrandById = async (req, res) => {
-  try {
-    const errand = await Errand.findById(req.params.id)
-      .populate('customerId', 'fullName email phoneNumber address')
-      .populate('providerId', 'fullName email phoneNumber address');
-
-    if (!errand) {
-      return res.status(404).json({ message: 'Errand not found' });
-    }
-
-    res.json(errand);
-  } catch (error) {
+    console.error('Update errand status error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -549,84 +578,7 @@ exports.acceptErrand = async (req, res) => {
 };
 
 // Update errand status
-exports.updateErrandStatus = async (req, res) => {
-  try {
-    const { status, location } = req.body;
-    const errand = await Errand.findById(req.params.id);
 
-    if (!errand) {
-      return res.status(404).json({ message: 'Errand not found' });
-    }
-
-    // Check authorization
-    const isCustomer = errand.customerId.toString() === req.user._id.toString();
-    const isProvider = errand.providerId && errand.providerId.toString() === req.user._id.toString();
-
-    if (!isCustomer && !isProvider && req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied' });
-    }
-
-    const validTransitions = {
-      pending: ['accepted', 'cancelled'],
-      accepted: ['en_route', 'cancelled'],
-      en_route: ['collected', 'cancelled'],
-      collected: ['delivered', 'cancelled'],
-      delivered: [],
-      cancelled: [],
-    };
-
-    if (!validTransitions[errand.status]?.includes(status)) {
-      return res.status(400).json({ message: 'Invalid status transition' });
-    }
-
-    errand.status = status;
-    
-    // Update timestamps
-    const statusMap = {
-      accepted: 'acceptedAt',
-      en_route: 'enRouteAt',
-      collected: 'collectedAt',
-      delivered: 'deliveredAt',
-      cancelled: 'cancelledAt',
-    };
-    
-    if (statusMap[status]) {
-      errand[statusMap[status]] = new Date();
-    }
-
-    // Add location update
-    if (location) {
-      errand.locationUpdates.push({
-        lat: location.lat,
-        lng: location.lng,
-        timestamp: new Date(),
-        status: status,
-      });
-    }
-
-    await errand.save();
-
-    // Notify other party
-    const recipientId = isCustomer ? errand.providerId : errand.customerId;
-    if (recipientId) {
-      const notification = new Notification({
-        userId: recipientId,
-        type: `booking_${status}`,
-        title: `Errand ${status}`,
-        message: `Errand #${errand.errandId} is now ${status}`,
-        data: { errandId: errand._id },
-      });
-      await notification.save();
-    }
-
-    res.json({
-      message: 'Errand status updated',
-      errand,
-    });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
 
 // Get errand by ID
 exports.getErrandById = async (req, res) => {

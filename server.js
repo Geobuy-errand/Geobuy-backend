@@ -107,6 +107,24 @@ app.get('/api/health', (req, res) => {
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
+  socket.on('admin-join', () => {
+    socket.join('admin_room');
+    console.log('📢 Admin joined admin_room');
+  });
+
+  // Join provider room
+  socket.on('provider-join', (providerId) => {
+    socket.join(`provider_${providerId}`);
+    console.log(`📢 Provider ${providerId} joined their room`);
+  });
+
+  // Join customer room
+  socket.on('customer-join', (customerId) => {
+    socket.join(`customer_${customerId}`);
+    console.log(`📢 Customer ${customerId} joined their room`);
+  });
+
+  // Join errand room
   socket.on('join-errand', (errandId) => {
     socket.join(`errand_${errandId}`);
     console.log(`📢 Socket joined errand ${errandId}`);
@@ -145,6 +163,19 @@ io.on('connection', (socket) => {
     console.log(`User ${userId} joined their room`);
   });
 });
+
+const emitSystemEvent = (event, data, rooms = []) => {
+  if (rooms.length === 0) {
+    io.emit(event, data);
+  } else {
+    rooms.forEach(room => {
+      io.to(room).emit(event, data);
+    });
+  }
+};
+
+// Make emitSystemEvent available globally
+app.set('emitSystemEvent', emitSystemEvent);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

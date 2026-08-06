@@ -32,6 +32,21 @@ const walletSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    // Stripe Connect account
+    stripeAccountId: {
+      type: String,
+    },
+    stripeAccountStatus: {
+      type: String,
+      enum: ['pending', 'active', 'disabled'],
+      default: 'pending',
+    },
+    payoutSchedule: {
+      type: String,
+      enum: ['instant', 'daily', 'weekly', 'monthly'],
+      default: 'daily',
+    },
+    lastPayoutDate: Date,
   },
   {
     timestamps: true,

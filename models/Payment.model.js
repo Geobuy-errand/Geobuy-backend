@@ -2,10 +2,13 @@ const mongoose = require('mongoose');
 
 const paymentSchema = new mongoose.Schema(
   {
+    errandId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Errand',
+    },
     bookingId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Booking',
-      required: true,
     },
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -23,7 +26,7 @@ const paymentSchema = new mongoose.Schema(
     },
     platformFee: {
       type: Number,
-      default: 0,
+      required: true,
     },
     providerAmount: {
       type: Number,
@@ -40,17 +43,28 @@ const paymentSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'processing', 'succeeded', 'refunded', 'failed'],
+      enum: ['pending', 'processing', 'succeeded', 'released', 'refunded', 'failed'],
       default: 'pending',
     },
     isEscrow: {
       type: Boolean,
       default: true,
     },
+    // Disbursement tracking
+    disbursementStatus: {
+      type: String,
+      enum: ['pending', 'processing', 'completed', 'failed'],
+      default: 'pending',
+    },
+    disbursementDate: Date,
+    disbursementReference: String,
     releasedAt: Date,
     refundedAt: Date,
     refundAmount: Number,
     refundReason: String,
+    // Stripe connect account IDs
+    platformAccountId: String, // GEOBUY's Stripe account
+    providerAccountId: String, // Provider's Stripe Connect account
     stripeSessionId: String,
     metadata: {
       type: mongoose.Schema.Types.Mixed,
