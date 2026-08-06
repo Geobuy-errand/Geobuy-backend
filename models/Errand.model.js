@@ -86,13 +86,13 @@ const errandSchema = new mongoose.Schema(
       platformFee: Number,
       providerAmount: Number,
     },
-    distance: {
-      type: Number,
-      default: 0,
-    },
     duration: {
       type: Number,
       default: 0,
+    },
+    durationText: {
+      type: String,
+      default: '',
     },
     locationUpdates: [
       {
@@ -113,6 +113,43 @@ const errandSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    distance: {
+      type: Number,
+      default: 0,
+    },
+    distanceText: {
+      type: String,
+      default: '',
+    },
+    baseFee: {
+      type: Number,
+      default: 3.50, // £3.50 base fee
+    },
+    distanceFeePerMile: {
+      type: Number,
+      default: 1.60, // £1.60 per mile
+    },
+    subtotal: {
+      type: Number,
+      default: 0,
+    },
+    discountPercentage: {
+      type: Number,
+      default: 0, // 20% for subscribed users
+    },
+    discountAmount: {
+      type: Number,
+      default: 0,
+    },
+    total: {
+      type: Number,
+      default: 0,
+    },
+    isSubscribed: {
+      type: Boolean,
+      default: false,
+    },
+
   },
   {
     timestamps: true,
@@ -130,6 +167,22 @@ errandSchema.pre('save', function (next) {
       .toString()
       .padStart(4, '0');
     this.errandId = `E-${year}${month}${day}-${random}`;
+  }
+
+  if (this.distance > 0) {
+    // Calculate subtotal: (distance * per mile) + base fee
+    this.subtotal = (this.distance * this.distanceFeePerMile) + this.baseFee;
+    
+    // Apply subscription discount if applicable
+    if (this.isSubscribed) {
+      this.discountPercentage = 20;
+      this.discountAmount = this.subtotal * 0.20;
+      this.total = this.subtotal - this.discountAmount;
+    } else {
+      this.discountPercentage = 0;
+      this.discountAmount = 0;
+      this.total = this.subtotal;
+    }
   }
   next();
 });

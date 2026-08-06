@@ -1,5 +1,5 @@
-const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
 
 const userSchema = new mongoose.Schema(
   {
@@ -27,8 +27,8 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['customer', 'provider', 'admin'],
-      default: 'customer',
+      enum: ["customer", "provider", "admin"],
+      default: "customer",
     },
     isActive: {
       type: Boolean,
@@ -71,8 +71,8 @@ const userSchema = new mongoose.Schema(
     dbsDocument: String,
     verificationStatus: {
       type: String,
-      enum: ['pending', 'approved', 'rejected'],
-      default: 'pending',
+      enum: ["pending", "approved", "rejected"],
+      default: "pending",
     },
     rejectionReason: String,
     averageRating: {
@@ -90,8 +90,8 @@ const userSchema = new mongoose.Schema(
     location: {
       type: {
         type: String,
-        enum: ['Point'],
-        default: 'Point',
+        enum: ["Point"],
+        default: "Point",
       },
       coordinates: {
         type: [Number],
@@ -101,8 +101,8 @@ const userSchema = new mongoose.Schema(
     serviceCategories: [
       {
         type: String,
-        enum: ['care', 'trades', 'professional', 'personal', 'other'],
-      }
+        enum: ["care", "trades", "professional", "personal", "other"],
+      },
     ],
     serviceArea: {
       postcodes: [String],
@@ -110,20 +110,20 @@ const userSchema = new mongoose.Schema(
     },
     travelType: {
       type: String,
-      enum: ['walking', 'cycling', 'driving'],
-      default: 'driving',
+      enum: ["walking", "cycling", "driving"],
+      default: "driving",
     },
     dbsStatus: {
       type: String,
-      enum: ['clear', 'pending', 'expired', 'not_submitted'],
-      default: 'not_submitted',
+      enum: ["clear", "pending", "expired", "not_submitted"],
+      default: "not_submitted",
     },
     dbsNumber: String,
     dbsExpiry: Date,
     insuranceStatus: {
       type: String,
-      enum: ['active', 'expired', 'not_insured'],
-      default: 'not_insured',
+      enum: ["active", "expired", "not_insured"],
+      default: "not_insured",
     },
     insuranceProvider: String,
     insuranceExpiry: Date,
@@ -139,19 +139,27 @@ const userSchema = new mongoose.Schema(
           type: Boolean,
           default: false,
         },
-      }
+      },
     ],
     verificationBadges: [
       {
         type: String,
-        enum: ['id_checked', 'dbs_checked', 'certified', 'insured'],
-      }
+        enum: ["id_checked", "dbs_checked", "certified", "insured"],
+      },
     ],
     availabilitySchedule: [
       {
         day: {
           type: String,
-          enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'],
+          enum: [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+          ],
         },
         startTime: String,
         endTime: String,
@@ -159,7 +167,7 @@ const userSchema = new mongoose.Schema(
           type: Boolean,
           default: true,
         },
-      }
+      },
     ],
     savedLocations: [
       {
@@ -176,15 +184,15 @@ const userSchema = new mongoose.Schema(
           type: Boolean,
           default: false,
         },
-      }
+      },
     ],
     serviceRates: {
       hourlyRate: Number,
       fixedRate: Number,
       rateType: {
         type: String,
-        enum: ['hourly', 'fixed', 'negotiable'],
-        default: 'negotiable',
+        enum: ["hourly", "fixed", "negotiable"],
+        default: "negotiable",
       },
     },
     serviceTerms: {
@@ -192,17 +200,37 @@ const userSchema = new mongoose.Schema(
       noticePeriod: Number, // hours
       travelFee: Number,
     },
+    // Add these fields to the User schema
+    subscription: {
+      isSubscribed: {
+        type: Boolean,
+        default: false,
+      },
+      stripeCustomerId: String,
+      subscriptionId: String,
+      subscriptionStatus: {
+        type: String,
+        enum: ["active", "inactive", "canceled", "past_due"],
+        default: "inactive",
+      },
+      subscriptionPlan: {
+        type: String,
+        enum: ["basic", "premium", "pro"],
+      },
+      subscribedAt: Date,
+      subscriptionExpiresAt: Date,
+    },
   },
   {
     timestamps: true,
   }
 );
 
-userSchema.index({ location: '2dsphere' });
+userSchema.index({ location: "2dsphere" });
 
 // Hash password before saving
-userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
+userSchema.pre("save", async function (next) {
+  if (!this.isModified("password")) return next();
   this.password = await bcrypt.hash(this.password, 12);
   next();
 });
@@ -212,17 +240,16 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 };
 
 userSchema.methods.isCustomer = function () {
-  return this.role === 'customer';
+  return this.role === "customer";
 };
 
-
 userSchema.methods.isProvider = function () {
-  return this.role === 'provider';
+  return this.role === "provider";
 };
 
 // Check if user is admin
 userSchema.methods.isAdmin = function () {
-  return this.role === 'admin';
+  return this.role === "admin";
 };
 
-module.exports = mongoose.model('User', userSchema);
+module.exports = mongoose.model("User", userSchema);

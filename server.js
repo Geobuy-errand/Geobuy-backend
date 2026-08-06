@@ -32,12 +32,16 @@ const app = express();
 
 app.set('trust proxy', 1);
 const server = http.createServer(app);
+
 const io = new Server(server, {
   cors: {
     origin: process.env.FRONTEND_URL || 'http://localhost:5173',
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
   },
 });
+
+app.set('io', io);
 
 // Rate limiting
 const limiter = rateLimit({
@@ -103,14 +107,14 @@ app.get('/api/health', (req, res) => {
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
-  socket.on('join-room', (userId) => {
-    socket.join(`user_${userId}`);
-    console.log(`User ${userId} joined their room`);
+  socket.on('join-errand', (errandId) => {
+    socket.join(`errand_${errandId}`);
+    console.log(`📢 Socket joined errand ${errandId}`);
   });
 
   socket.on('join-booking', (bookingId) => {
     socket.join(`booking_${bookingId}`);
-    console.log(`Socket joined booking ${bookingId}`);
+    console.log(`📢 Socket joined booking ${bookingId}`);
   });
 
   socket.on('send-message', (data) => {
@@ -131,7 +135,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+    console.log('🔴 Client disconnected:', socket.id);
+  });
+
+
+
+  socket.on('join-room', (userId) => {
+    socket.join(`user_${userId}`);
+    console.log(`User ${userId} joined their room`);
   });
 });
 

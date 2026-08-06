@@ -11,16 +11,19 @@ router.get('/providers', ServiceController.getServiceProviders);
 router.get('/category/:category', ServiceController.getServicesByCategory);
 router.get('/:id', ServiceController.getServiceById);
 
-// Customer routes (protected)
+// Customer routes
 router.post('/request', authMiddleware, requireRole('customer'), ServiceController.createServiceRequest);
 router.get('/my-requests', authMiddleware, requireRole('customer'), ServiceController.getMyServiceRequests);
 router.get('/request/:id', authMiddleware, ServiceController.getServiceRequestById);
 router.put('/request/:id/cancel', authMiddleware, requireRole('customer'), ServiceController.cancelServiceRequest);
+router.put('/request/:id/complete', authMiddleware, requireRole('customer'), ServiceController.completeServiceRequest);
 
 // Quote routes
 router.post('/quote', authMiddleware, requireRole('provider'), ServiceController.submitQuote);
+router.post('/quote/negotiate', authMiddleware, ServiceController.negotiateQuote);
+router.post('/quote/accept', authMiddleware, requireRole('customer'), ServiceController.acceptQuote);
+router.post('/quote/reject', authMiddleware, ServiceController.rejectQuote);
 router.get('/request/:id/quotes', authMiddleware, ServiceController.getQuotesForRequest);
-router.put('/quote/:id/select', authMiddleware, requireRole('customer'), ServiceController.selectQuote);
 
 // Provider routes
 router.get('/provider-requests', authMiddleware, requireRole('provider'), ServiceController.getProviderServiceRequests);

@@ -43,26 +43,6 @@ const serviceRequestSchema = new mongoose.Schema(
     },
     preferredDate: Date,
     preferredTime: String,
-    status: {
-      type: String,
-      enum: [
-        'pending',
-        'quotes_received',
-        'provider_selected',
-        'in_progress',
-        'completed',
-        'cancelled',
-      ],
-      default: 'pending',
-    },
-    selectedProviderId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-    },
-    selectedQuoteId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Quote',
-    },
     budget: {
       type: Number,
     },
@@ -78,8 +58,81 @@ const serviceRequestSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    serviceFee: {
+      type: Number,
+      default: 1.99,
+    },
+    status: {
+      type: String,
+      enum: [
+        'pending',
+        'quotes_received',
+        'negotiating',
+        'provider_selected',
+        'in_progress',
+        'completed',
+        'cancelled',
+        'expired',
+      ],
+      default: 'pending',
+    },
+    selectedProviderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    selectedQuoteId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Quote',
+    },
+    finalPrice: {
+      type: Number,
+    },
+    negotiationHistory: [
+      {
+        from: {
+          type: String,
+          enum: ['customer', 'provider', 'system'],
+        },
+        userId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+        },
+        message: String,
+        offerAmount: Number,
+        status: {
+          type: String,
+          enum: ['sent', 'accepted', 'rejected', 'countered'],
+        },
+        timestamp: {
+          type: Date,
+          default: Date.now,
+        },
+      }
+    ],
+    matchedProviders: [
+      {
+        providerId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+        },
+        matchScore: Number,
+        distance: Number,
+        responseTime: Number,
+        status: {
+          type: String,
+          enum: ['pending', 'invited', 'responded', 'declined'],
+        },
+        invitedAt: Date,
+        respondedAt: Date,
+      }
+    ],
+    expiresAt: {
+      type: Date,
+      default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+    },
     completedAt: Date,
     cancelledAt: Date,
+    cancellationReason: String,
   },
   {
     timestamps: true,

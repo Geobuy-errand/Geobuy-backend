@@ -82,6 +82,7 @@ exports.getDashboardStats = async (req, res) => {
         { $group: { _id: null, total: { $sum: '$amount' } } },
       ]),
       User.countDocuments({ role: 'provider', verificationStatus: 'pending' }),
+      User.countDocuments({ 'subscription.isSubscribed': true }),
     ]);
 
     // Recent bookings
