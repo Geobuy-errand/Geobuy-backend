@@ -5,24 +5,360 @@ const DistanceService = require('../services/distanceService');
 const OSRMService = require('../services/osrmService');
 const NominatimService = require('../services/nominatimService');
 
+
+const BASE_FEE = 3.99;
+const SUBSCRIPTION_DISCOUNT = 20; // 20%
+
 // Get all errands for user
-exports.getErrands = async (req, res) => {
+exports.createErrand = async (req, res) => {
   try {
-    let query = {};
-    if (req.user.role === 'customer') {
-      query.customerId = req.user._id;
-    } else if (req.user.role === 'provider') {
-      query.providerId = req.user._id;
+    const {
+      serviceType,
+      pickup,
+      dropoff,
+      taskDetails,
+      preferredDate,
+      preferredTime,
+      requiresLiveTracking,
+      photos,
+      isHeavyItem,
+      isPeakUrgent,
+      extraStopsCount,
+      waitTimeMinutes,
+      minPrice,
+      maxPrice,
+    } = req.body;
+
+    // ============================================================
+    // STEP 1: Validate UK Addresses
+    // ============================================================
+    
+    if (!pickup || !pickup.address) {
+      return res.status(400).json({
+        message: 'Pickup address is required',
+      });
     }
+
+    const pickupValidation = await NominatimService.validateUKAddress(pickup.address);
     
-    const errands = await Errand.find(query)
-      .populate('customerId', 'fullName email phoneNumber')
-      .populate('providerId', 'fullName email phoneNumber')
-      .sort({ createdAt: -1 });
+    if (!pickupValidation.isValid) {
+      return res.status(400).json({
+        message: 'Invalid pickup address. Please enter a valid UK address.',
+        error: pickupValidation.error,
+      });
+    }
+
+    let dropoffValidation = null;
+    if (dropoff && dropoff.address) {
+      dropoffValidation = await NominatimService.validateUKAddress(dropoff.address);
+      
+      if (!dropoffValidation.isValid) {
+        return res.status(400).json({
+          message: 'Invalid dropoff address. Please enter a valid UK address.',
+          error: dropoffValidation.error,
+        });
+      }
+    } else {
+      return res.status(400).json({
+        message: 'Dropoff address is required for distance calculation.',
+      });
+    }
+
+    // ============================================================
+    // STEP 2: Calculate Distance using OSRM
+    // ============================================================
     
-    res.json(errands);
+    const distanceResult = await OSRMService.getDistance(
+      pickupValidation.coordinates.lat,
+      pickupValidation.coordinates.lon,
+      dropoffValidation.coordinates.lat,
+      dropoffValidation.coordinates.lon
+    );
+
+    const distanceInMiles = distanceResult.distance.value;
+    const travelDurationMinutes = distanceResult.duration.value;
+    const travelDurationText = distanceResult.duration.text;
+
+    // ============================================================
+    // STEP 3: Get User's Subscription Status
+    // ============================================================
+    
+    const user = await User.findById(req.user._id);
+    const isSubscribed = user?.subscription?.isSubscribed || false;
+
+    // ============================================================
+    // STEP 4: Calculate Base Pricing
+    // ============================================================
+    
+    // Distance tier rates
+    let ratePerMile = 0.80;
+    if (distanceInMiles <= 3) ratePerMile = 0.80;
+    else if (distanceInMiles <= 10) ratePerMile = 0.70;
+    else if (distanceInMiles <= 20) ratePerMile = 0.60;
+    else ratePerMile = 0.50;
+
+    const distanceFee = distanceInMiles * ratePerMile;
+    let subtotal = BASE_FEE + distanceFee;
+    
+    // Additional charges
+    if (isHeavyItem) subtotal += 2.99;
+    if (waitTimeMinutes > 5) subtotal += (waitTimeMinutes - 5) * 0.30;
+    if (isPeakUrgent) subtotal += 1.99;
+    if (extraStopsCount > 0) subtotal += extraStopsCount * 1.50;
+    
+    subtotal = Math.round(subtotal * 100) / 100;
+    
+    // Apply subscription discount
+    let discountPercentage = 0;
+    let discountAmount = 0;
+    let total = subtotal;
+    
+    if (isSubscribed) {
+      discountPercentage = SUBSCRIPTION_DISCOUNT;
+      discountAmount = Math.round((subtotal * SUBSCRIPTION_DISCOUNT / 100) * 100) / 100;
+      total = Math.round((subtotal - discountAmount) * 100) / 100;
+    }
+
+    // ============================================================
+    // STEP 5: Create Errand (No Provider Assigned Yet)
+    // ============================================================
+    
+    const errand = new Errand({
+      customerId: req.user._id,
+      serviceType,
+      pickup: {
+        ...pickup,
+        formattedAddress: pickupValidation.formattedAddress,
+        coordinates: {
+          lat: pickupValidation.coordinates.lat,
+          lng: pickupValidation.coordinates.lon,
+        },
+      },
+      dropoff: {
+        ...dropoff,
+        formattedAddress: dropoffValidation.formattedAddress,
+        coordinates: {
+          lat: dropoffValidation.coordinates.lat,
+          lng: dropoffValidation.coordinates.lon,
+        },
+      },
+      taskDetails,
+      preferredDate,
+      preferredTime,
+      photos: photos || [],
+      requiresLiveTracking: requiresLiveTracking || false,
+      status: 'pending',
+      distance: Math.round(distanceInMiles * 100) / 100,
+      distanceText: distanceResult.distance.text,
+      duration: Math.round(travelDurationMinutes * 100) / 100,
+      durationText: travelDurationText,
+      // Additional charges
+      isHeavyItem: isHeavyItem || false,
+      isPeakUrgent: isPeakUrgent || false,
+      extraStopsCount: extraStopsCount || 0,
+      waitTimeMinutes: waitTimeMinutes || 0,
+      isSubscribed,
+      // Pricing
+      baseFee: BASE_FEE,
+      distanceRate: ratePerMile,
+      distanceFee: Math.round(distanceFee * 100) / 100,
+      subtotal: subtotal,
+      total: total,
+      discountPercentage,
+      discountAmount,
+      // Negotiation
+      minPrice: minPrice || Math.round(total * 0.80 * 100) / 100,
+      maxPrice: maxPrice || Math.round(total * 1.20 * 100) / 100,
+      negotiationStatus: 'open',
+      // No provider assigned yet, so platformFee and providerAmount = 0
+      platformFee: 0,
+      providerAmount: 0,
+    });
+
+    await errand.save();
+
+    // ============================================================
+    // STEP 6: Find and Notify Providers (With Fallback)
+    // ============================================================
+    
+    // Get all active providers
+    const allProviders = await User.find({
+      role: 'provider',
+      isActive: true,
+      isAvailable: true,
+      verificationStatus: 'approved',
+    });
+
+    let providersWithDistance = [];
+    let nearestProviders = [];
+    let allProvidersNotified = [];
+
+    if (allProviders.length > 0) {
+      // Prepare provider coordinates
+      const providerCoords = allProviders.map(p => ({
+        lat: p.location?.coordinates?.[1] || 51.5074,
+        lon: p.location?.coordinates?.[0] || -0.1276,
+      }));
+
+      // Calculate distances from pickup to each provider
+      const distances = await OSRMService.getBatchDistances(
+        pickupValidation.coordinates.lat,
+        pickupValidation.coordinates.lon,
+        providerCoords
+      );
+
+      // Map providers with distances
+      providersWithDistance = allProviders.map((provider, index) => ({
+        ...provider.toObject(),
+        distance: distances[index]?.distance || 999,
+        distanceText: distances[index]?.distance 
+          ? `${distances[index].distance.toFixed(1)} miles` 
+          : 'Unknown',
+        duration: distances[index]?.duration || 999,
+        durationText: distances[index]?.duration
+          ? `${Math.round(distances[index].duration)} min`
+          : 'Unknown',
+      }));
+
+      // Sort by distance
+      const sortedProviders = [...providersWithDistance].sort((a, b) => a.distance - b.distance);
+
+      // ============================================================
+      // NOTIFICATION STRATEGY:
+      // 1. Nearby providers (within 10 miles) get immediate notifications
+      // 2. If NO nearby providers, all providers get notified
+      // 3. All providers can see the errand in their "Available Jobs" list
+      // ============================================================
+      
+      const NEARBY_THRESHOLD = 10; // miles
+      const nearbyProviders = sortedProviders.filter(p => p.distance <= NEARBY_THRESHOLD);
+      
+      // Determine which providers to notify immediately
+      let providersToNotify = [];
+      
+      if (nearbyProviders.length > 0) {
+        // Case 1: There are nearby providers - notify them
+        providersToNotify = nearbyProviders.slice(0, 10); // Notify top 10 nearby
+        nearestProviders = providersToNotify;
+        
+        console.log(`📍 Found ${nearbyProviders.length} nearby providers, notifying top ${providersToNotify.length}`);
+      } else {
+        // Case 2: No nearby providers - notify all providers (with distance info)
+        providersToNotify = sortedProviders.slice(0, 20); // Notify top 20 (furthest)
+        nearestProviders = providersToNotify;
+        
+        console.log(`📍 No nearby providers found. Notifying ${providersToNotify.length} providers (furthest)`);
+      }
+
+      // Send notifications and store matched providers
+      for (const provider of providersToNotify) {
+        // Create notification
+        const notification = new Notification({
+          userId: provider._id,
+          type: 'booking_created',
+          title: nearbyProviders.length > 0 ? 'New Errand Available Nearby!' : 'New Errand Available',
+          message: nearbyProviders.length > 0 
+            ? `New ${serviceType} errand available ${provider.distanceText} from you` 
+            : `New ${serviceType} errand available (${provider.distanceText} away)`,
+          data: { 
+            errandId: errand._id, 
+            distance: provider.distanceText,
+            duration: provider.durationText,
+            serviceType,
+            isNearby: nearbyProviders.length > 0,
+          },
+        });
+        await notification.save();
+
+        // Emit socket event for real-time notification
+        try {
+          const io = req.app.get('io');
+          if (io) {
+            io.to(`user_${provider._id}`).emit('new-errand-available', {
+              errandId: errand._id,
+              serviceType,
+              distance: provider.distanceText,
+              duration: provider.durationText,
+              pickup: pickup.address,
+              estimatedPrice: total,
+              isNearby: nearbyProviders.length > 0,
+            });
+          }
+        } catch (socketError) {
+          console.warn('Socket emit error:', socketError.message);
+        }
+
+        // Store matched providers on the errand (all matched providers)
+        allProvidersNotified.push({
+          providerId: provider._id,
+          distance: provider.distance,
+          distanceText: provider.distanceText,
+          duration: provider.durationText,
+          isNearby: provider.distance <= NEARBY_THRESHOLD,
+        });
+      }
+
+      // Store all matched providers on the errand for reference
+      errand.matchedProviders = allProvidersNotified;
+      await errand.save();
+    }
+
+    // ============================================================
+    // STEP 7: Response
+    // ============================================================
+    
+    res.status(201).json({
+      message: 'Errand created successfully. Waiting for offers.',
+      errand,
+      priceBreakdown: {
+        baseFee: BASE_FEE,
+        distance: {
+          miles: Math.round(distanceInMiles * 100) / 100,
+          text: distanceResult.distance.text,
+          ratePerMile: ratePerMile,
+        },
+        distanceFee: errand.distanceFee,
+        additionalCharges: {
+          heavyItem: isHeavyItem ? 2.99 : null,
+          waitTime: waitTimeMinutes > 5 ? (waitTimeMinutes - 5) * 0.30 : null,
+          peakUrgent: isPeakUrgent ? 1.99 : null,
+          extraStops: extraStopsCount > 0 ? extraStopsCount * 1.50 : null,
+        },
+        subtotal: subtotal,
+        discount: {
+          percentage: discountPercentage,
+          amount: discountAmount,
+        },
+        total: total,
+      },
+      negotiation: {
+        status: 'open',
+        minPrice: errand.minPrice,
+        maxPrice: errand.maxPrice,
+      },
+      providerNotifications: {
+        nearbyCount: providersWithDistance.filter(p => p.distance <= NEARBY_THRESHOLD).length,
+        totalNotified: providersToNotify.length,
+        totalAvailable: allProviders.length,
+        message: providersWithDistance.filter(p => p.distance <= NEARBY_THRESHOLD).length > 0
+          ? `Notified ${providersToNotify.length} nearby providers`
+          : 'No nearby providers found. Notified available providers further away.',
+      },
+      nearestProviders: nearestProviders.map(p => ({
+        id: p._id,
+        name: p.fullName,
+        distance: p.distanceText,
+        duration: p.durationText,
+        rating: p.averageRating,
+      })),
+    });
+
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error('Create errand error:', error);
+    res.status(500).json({ 
+      message: 'Failed to create errand',
+      error: error.message,
+    });
   }
 };
 
@@ -132,10 +468,6 @@ exports.createErrand = async (req, res) => {
         message: 'Dropoff address is required for distance calculation.',
       });
     }
-
-    // ============================================================
-    // STEP 2: Calculate Distance using OSRM
-    // ============================================================
     
     const distanceResult = await OSRMService.getDistance(
       pickupValidation.coordinates.lat,
@@ -196,12 +528,7 @@ exports.createErrand = async (req, res) => {
       isSubscribed,
     });
 
-    // Pricing is calculated in the pre-save middleware
     await errand.save();
-
-    // ============================================================
-    // STEP 5: Find and Notify Nearby Providers
-    // ============================================================
     
     const providers = await User.find({
       role: 'provider',

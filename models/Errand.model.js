@@ -193,6 +193,16 @@ const errandSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    paymentStatus: {
+      type: String,
+      enum: ["pending", "paid", "released", "refunded"],
+      default: "pending",
+    },
+    paymentIntentId: String,
+    paymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Payment",
+    },
     // Revenue split
     platformFee: {
       type: Number,
@@ -210,6 +220,90 @@ const errandSchema = new mongoose.Schema(
     waitTimeEnd: {
       type: Date,
     },
+    negotiationStatus: {
+      type: String,
+      enum: ["open", "negotiating", "accepted", "rejected", "expired"],
+      default: "open",
+    },
+    minPrice: {
+      type: Number,
+    },
+    maxPrice: {
+      type: Number,
+    },
+    currentOffer: {
+      providerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      amount: Number,
+      message: String,
+      offeredAt: Date,
+      expiresAt: Date,
+    },
+    offers: [
+      {
+        providerId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+        },
+        amount: Number,
+        message: String,
+        status: {
+          type: String,
+          enum: ["pending", "accepted", "rejected", "countered", "expired"],
+          default: "pending",
+        },
+        offeredAt: {
+          type: Date,
+          default: Date.now,
+        },
+        expiresAt: Date,
+        counterOffers: [
+          {
+            amount: Number,
+            message: String,
+            offeredAt: {
+              type: Date,
+              default: Date.now,
+            },
+          },
+        ],
+      },
+    ],
+    acceptedOffer: {
+      providerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      amount: Number,
+      acceptedAt: Date,
+    },
+    // Add this field to your errand schema
+    matchedProviders: [
+      {
+        providerId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+        },
+        distance: Number,
+        distanceText: String,
+        duration: String,
+        isNearby: {
+          type: Boolean,
+          default: false,
+        },
+        status: {
+          type: String,
+          enum: ["pending", "notified", "viewed", "offered", "declined"],
+          default: "pending",
+        },
+        notifiedAt: {
+          type: Date,
+          default: Date.now,
+        },
+      },
+    ],
   },
   {
     timestamps: true,
@@ -299,6 +393,49 @@ errandSchema.pre("save", function (next) {
       .padStart(4, "0");
     this.errandId = `E-${year}${month}${day}-${random}`;
   }
+  next();
+});
+
+errandSchema.pre("save", function (next) {
+  // Only calculate if no provider assigned yet (base pricing)
+  if (!this.providerId) {
+    const distance = this.distance || 0;
+    let ratePerMile = 0.8;
+
+    if (distance <= 3) ratePerMile = 0.8;
+    else if (distance <= 10) ratePerMile = 0.7;
+    else if (distance <= 20) ratePerMile = 0.6;
+    else ratePerMile = 0.5;
+
+    this.distanceRate = ratePerMile;
+    this.distanceFee = Math.round(distance * ratePerMile * 100) / 100;
+
+    let subtotal = this.baseFee + this.distanceFee;
+    if (this.isHeavyItem) subtotal += 2.99;
+    if (this.waitTimeMinutes > 5) subtotal += (this.waitTimeMinutes - 5) * 0.3;
+    if (this.isPeakUrgent) subtotal += 1.99;
+    if (this.extraStopsCount > 0) subtotal += this.extraStopsCount * 1.5;
+
+    this.subtotal = Math.round(subtotal * 100) / 100;
+
+    // Apply subscription discount
+    if (this.isSubscribed) {
+      this.discountPercentage = 20;
+      this.discountAmount = Math.round(this.subtotal * 0.2 * 100) / 100;
+      this.total =
+        Math.round((this.subtotal - this.discountAmount) * 100) / 100;
+    } else {
+      this.discountPercentage = 0;
+      this.discountAmount = 0;
+      this.total = this.subtotal;
+    }
+
+    // Platform fee and provider amount are calculated when offer is accepted
+    // Leave them as 0 until provider is assigned
+    this.platformFee = 0;
+    this.providerAmount = 0;
+  }
+
   next();
 });
 
