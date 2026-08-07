@@ -3,6 +3,7 @@
 const Errand = require('../models/Errand.model');
 const User = require('../models/User.model');
 const Notification = require('../models/Notification.model');
+const createNotification = require('../utils/create-notification');
 
 // Submit an offer for an errand (Provider)
 exports.submitOffer = async (req, res) => {
@@ -328,23 +329,5 @@ exports.getOffers = async (req, res) => {
   } catch (error) {
     console.error('Get offers error:', error);
     res.status(500).json({ message: error.message });
-  }
-};
-
-// Helper function
-const createNotification = async (userId, type, title, message, data) => {
-  try {
-    const Notification = require('../models/Notification.model');
-    const notification = new Notification({
-      userId,
-      type,
-      title,
-      message,
-      data,
-    });
-    await notification.save();
-    return notification;
-  } catch (error) {
-    console.error('Create notification error:', error);
   }
 };

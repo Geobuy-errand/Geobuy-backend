@@ -304,6 +304,88 @@ const errandSchema = new mongoose.Schema(
         },
       },
     ],
+    qrCode: {
+      verificationToken: String,
+      qrDataUrl: String,
+      generatedAt: Date,
+      expiresAt: Date,
+      scannedAt: Date,
+      scannedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+      scanCount: {
+        type: Number,
+        default: 0,
+      },
+      isVerified: {
+        type: Boolean,
+        default: false,
+      },
+    },
+    
+    // Document/Pickup upload fields
+    documents: [
+      {
+        type: {
+          type: String,
+          enum: ['receipt', 'pickup_document', 'image', 'other'],
+          default: 'image',
+        },
+        url: String,
+        filename: String,
+        description: String,
+        uploadedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        uploadedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+        },
+        isRequired: {
+          type: Boolean,
+          default: false,
+        },
+      }
+    ],
+    
+    // Pickup verification
+    pickupVerification: {
+      isVerified: {
+        type: Boolean,
+        default: false,
+      },
+      verifiedAt: Date,
+      verifiedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+      verificationMethod: {
+        type: String,
+        enum: ['qr_code', 'manual', 'document'],
+      },
+      notes: String,
+    },
+    
+    // Completion verification
+    completionVerification: {
+      isVerified: {
+        type: Boolean,
+        default: false,
+      },
+      verifiedAt: Date,
+      verifiedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+      verificationMethod: {
+        type: String,
+        enum: ['qr_code', 'manual', 'document'],
+      },
+      proofImages: [String],
+      notes: String,
+    },
   },
   {
     timestamps: true,

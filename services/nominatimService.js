@@ -6,49 +6,98 @@ class NominatimService {
   }
 
   /**
-   * Geocode an address to coordinates
-   * Checks that the address exists and returns UK coordinates
+   * Clean and format address for geocoding
    */
-  async geocodeAddress(address) {
-    try {
-      const response = await axios.get(
-        `${this.baseUrl}/search`,
-        {
-          params: {
-            q: address,
-            format: 'json',
-            limit: 1,
-            countrycodes: 'gb', // Restrict to UK
-            addressdetails: 1,
-          },
-          headers: {
-            'User-Agent': 'GEOBUY-Errands/1.0', // Required by Nominatim policy
-          },
-          timeout: 10000,
-        }
-      );
-
-      if (response.data.length === 0) {
-        return {
-          valid: false,
-          error: 'Address not found in the UK',
-        };
+  formatAddressForGeocoding(address) {
+    if (!address) return '';
+    
+    let formatted = address
+      .replace(/[^\w\s,.'-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    
+    // If address is too long, extract key parts
+    if (formatted.length > 100) {
+      const parts = formatted.split(',');
+      if (parts.length >= 3) {
+        const street = parts[0].trim();
+        const postcode = parts[parts.length - 2]?.trim() || parts[parts.length - 1].trim();
+        const city = parts[1]?.trim() || parts[parts.length - 3]?.trim();
+        formatted = `${street}, ${city}, ${postcode}`;
       }
+    }
+    
+    return formatted;
+  }
 
+  /**
+   * Extract UK postcode from address
+   */
+  extractPostcode(address) {
+    if (!address) return null;
+    const postcodeRegex = /([A-Z]{1,2}[0-9][A-Z0-9]? ?[0-9][A-Z]{2})/i;
+    const match = address.match(postcodeRegex);
+    return match ? match[1].toUpperCase() : null;
+  }
+
+  /**
+   * Geocode address with multiple fallback strategies
+   */
+  async geocodeAddress(address, retryCount = 0) {
+    try {
+      // Strategy 1: Full address
+      let formattedAddress = this.formatAddressForGeocoding(address);
+      
+      let response = await this.makeGeocodeRequest(formattedAddress);
+      
+      // Strategy 2: Just postcode
+      if (response.data.length === 0) {
+        const postcode = this.extractPostcode(address);
+        if (postcode) {
+          response = await this.makeGeocodeRequest(postcode);
+        }
+      }
+      
+      // Strategy 3: City + Postcode
+      if (response.data.length === 0) {
+        const parts = address.split(',').map(p => p.trim());
+        if (parts.length >= 2) {
+          const cityParts = parts.slice(-3).join(', ');
+          response = await this.makeGeocodeRequest(cityParts);
+        }
+      }
+      
+      // Strategy 4: Street + City
+      if (response.data.length === 0) {
+        const parts = address.split(',').map(p => p.trim());
+        if (parts.length >= 2) {
+          const streetCity = `${parts[0]}, ${parts[1]}`;
+          response = await this.makeGeocodeRequest(streetCity);
+        }
+      }
+      
+      // Strategy 5: Postcode + UK
+      if (response.data.length === 0) {
+        const postcode = this.extractPostcode(address);
+        if (postcode) {
+          response = await this.makeGeocodeRequest(`${postcode}, UK`);
+        }
+      }
+      
+      if (response.data.length === 0) {
+        throw new Error(`Address not found: ${address}`);
+      }
+      
       const result = response.data[0];
       
-      // Check if address is in UK
       const isUK = result.display_name?.includes('United Kingdom') ||
                    result.display_name?.includes('UK') ||
                    result.address?.country_code === 'gb';
-
+      
       if (!isUK) {
-        return {
-          valid: false,
-          error: 'Address is not in the United Kingdom',
-        };
+        throw new Error('Address must be in the United Kingdom');
       }
-
+      
       return {
         valid: true,
         lat: parseFloat(result.lat),
@@ -56,20 +105,48 @@ class NominatimService {
         displayName: result.display_name,
         importance: result.importance || 0,
         address: result.address || {},
-        // Ensure we have a reasonable quality match
         quality: result.importance > 0.3 ? 'high' : 'medium',
       };
+      
     } catch (error) {
-      console.error('Nominatim error:', error.message);
+      console.error('Geocoding error:', error.message);
+      
+      if (retryCount < 2) {
+        const postcode = this.extractPostcode(address);
+        if (postcode) {
+          return this.geocodeAddress(postcode, retryCount + 1);
+        }
+      }
+      
       return {
         valid: false,
-        error: 'Geocoding service temporarily unavailable. Please try again.',
+        error: error.message,
       };
     }
   }
 
   /**
-   * Validate a UK address (check if it exists in the UK)
+   * Make geocoding request to Nominatim
+   */
+  async makeGeocodeRequest(query) {
+    return await axios.get(`${this.baseUrl}/search`, {
+      params: {
+        q: query,
+        format: 'json',
+        limit: 5,
+        countrycodes: 'gb',
+        addressdetails: 1,
+        dedupe: 1,
+      },
+      headers: {
+        'User-Agent': 'GEOBUY-Errands/1.0',
+      },
+      timeout: 10000,
+    });
+  }
+
+  /**
+   * Validate a UK address
    */
   async validateUKAddress(address) {
     if (!address || address.trim().length < 3) {
@@ -103,22 +180,19 @@ class NominatimService {
    */
   async suggestAddresses(query, limit = 5) {
     try {
-      const response = await axios.get(
-        `${this.baseUrl}/search`,
-        {
-          params: {
-            q: query,
-            format: 'json',
-            limit: limit,
-            countrycodes: 'gb',
-            addressdetails: 1,
-          },
-          headers: {
-            'User-Agent': 'GEOBUY-Errands/1.0',
-          },
-          timeout: 5000,
-        }
-      );
+      const response = await axios.get(`${this.baseUrl}/search`, {
+        params: {
+          q: query,
+          format: 'json',
+          limit: limit,
+          countrycodes: 'gb',
+          addressdetails: 1,
+        },
+        headers: {
+          'User-Agent': 'GEOBUY-Errands/1.0',
+        },
+        timeout: 5000,
+      });
 
       return response.data.map(result => ({
         displayName: result.display_name,

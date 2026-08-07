@@ -2,9 +2,9 @@ const mongoose = require('mongoose');
 
 const messageSchema = new mongoose.Schema(
   {
-    bookingId: {
+    chatId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Booking',
+      ref: 'Chat',
       required: true,
     },
     senderId: {
@@ -22,17 +22,28 @@ const messageSchema = new mongoose.Schema(
       required: true,
       maxlength: 1000,
     },
+    messageType: {
+      type: String,
+      enum: ['text', 'image', 'file', 'system'],
+      default: 'text',
+    },
+    fileUrl: String,
     isRead: {
       type: Boolean,
       default: false,
     },
     readAt: Date,
-    messageType: {
-      type: String,
-      enum: ['text', 'image', 'system'],
-      default: 'text',
+    deliveredAt: Date,
+    isDeleted: {
+      type: Boolean,
+      default: false,
     },
-    imageUrl: String,
+    editedAt: Date,
+    reactions: {
+      type: Map,
+      of: [mongoose.Schema.Types.ObjectId],
+      default: {},
+    },
   },
   {
     timestamps: true,

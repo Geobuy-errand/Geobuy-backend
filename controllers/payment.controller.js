@@ -4,6 +4,7 @@ const Booking = require('../models/Booking.model');
 const User = require('../models/User.model');
 const Wallet = require('../models/Wallet.model');
 const Notification = require('../models/Notification.model');
+const createNotification = require('../utils/create-notification');
 
 // Create payment intent
 exports.createPaymentIntent = async (req, res) => {
@@ -738,34 +739,5 @@ exports.getAllPayments = async (req, res) => {
     res.json(payments);
   } catch (error) {
     res.status(500).json({ message: error.message });
-  }
-};
-
-const createNotification = async (userId, type, title, message, data) => {
-  try {
-    const notification = new Notification({
-      userId,
-      type,
-      title,
-      message,
-      data,
-    });
-    await notification.save();
-
-    const io = req.app.get('io');
-    if (io) {
-      io.to(`user_${userId}`).emit('new-notification', {
-        id: notification._id,
-        type,
-        title,
-        message,
-        data,
-        createdAt: notification.createdAt,
-      });
-    }
-
-    return notification;
-  } catch (error) {
-    console.error('Create notification error:', error);
   }
 };

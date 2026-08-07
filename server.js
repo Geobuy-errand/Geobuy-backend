@@ -23,6 +23,8 @@ const uploadRoutes = require('./routes/upload.route');
 const errandRoutes = require('./routes/errand.route');
 const verificationRoutes = require('./routes/verification.route');
 const commissionRoutes = require('./routes/commission.route');
+const qrRoutes = require('./routes/qrCode.route');
+const chatRoutes = require('./routes/chat.route');
 
 
 const seedDatabase = require('./seed');
@@ -85,6 +87,8 @@ app.use('/api/errands', errandRoutes);
 app.use('/api/services', serviceRoutes);
 app.use('/api/verifications', verificationRoutes);
 app.use('/api/commissions', commissionRoutes);
+app.use('/api/qr', qrRoutes);
+app.use('/api/chats', chatRoutes);
 
 // Health check
 
@@ -162,6 +166,16 @@ io.on('connection', (socket) => {
     socket.join(`user_${userId}`);
     console.log(`User ${userId} joined their room`);
   });
+
+  socket.on('typing', (data) => {
+    socket.to(`user_${data.userId}`).emit('typing', data);
+  });
+
+  // Join chat room
+  socket.on('join-chat', (chatId) => {
+    socket.join(`chat_${chatId}`);
+    console.log(`📢 Socket joined chat ${chatId}`);
+  });
 });
 
 const emitSystemEvent = (event, data, rooms = []) => {
@@ -190,11 +204,11 @@ app.use((err, req, res, next) => {
 mongoose
   .connect(process.env.MONGODB_URI)
   .then(() => {
-    console.log('Connected to MongoDB');
     const PORT = process.env.PORT || 5000;
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });
+    console.log('Connected to MongoDB');
   })
   .catch((err) => {
     console.error('MongoDB connection error:', err);

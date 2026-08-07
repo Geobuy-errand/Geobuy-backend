@@ -4,6 +4,8 @@ const Notification = require('../models/Notification.model');
 const DistanceService = require('../services/distanceService');
 const OSRMService = require('../services/osrmService');
 const NominatimService = require('../services/nominatimService');
+const createNotification = require('../utils/create-notification');
+const ChatModel = require('../models/Chat.model');
 
 
 const BASE_FEE = 3.99;
@@ -176,6 +178,45 @@ exports.createErrand = async (req, res) => {
     });
 
     await errand.save();
+
+    try {
+      let chat = await ChatModel.findOne({
+        errandId: errand._id,
+        isActive: true,
+      });
+
+      if (!chat) {
+        chat = new ChatModel({
+          participants: [
+            { userId: errand.customerId },
+            { userId: req.user._id },
+          ],
+          errandId: errand._id,
+          isSupportChat: false,
+        });
+        await chat.save();
+
+        // Notify both parties about chat
+        await createNotification(
+          errand.customerId,
+          'chat_created',
+          'Chat Available 💬',
+          `You can now chat with ${req.user.fullName} about your errand`,
+          { chatId: chat._id, errandId: errand._id }
+        );
+
+        await createNotification(
+          req.user._id,
+          'chat_created',
+          'Chat Available 💬',
+          'You can now chat with the customer about this errand',
+          { chatId: chat._id, errandId: errand._id }
+        );
+      }
+    } catch (chatError) {
+      console.warn('Chat creation failed:', chatError.message);
+      // Don't fail the errand acceptance if chat creation fails
+    }
 
     // ============================================================
     // STEP 6: Find and Notify Providers (With Fallback)
