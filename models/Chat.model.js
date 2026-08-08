@@ -60,7 +60,7 @@ const chatSchema = new mongoose.Schema(
     },
     category: {
       type: String,
-      enum: ['general', 'payment', 'technical', 'dispute', 'other'],
+      enum: ['general', 'payment', 'technical', 'dispute', 'chatbot', 'other'],
       default: 'general',
     },
     isActive: {

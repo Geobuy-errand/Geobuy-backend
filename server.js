@@ -25,6 +25,7 @@ const verificationRoutes = require('./routes/verification.route');
 const commissionRoutes = require('./routes/commission.route');
 const qrRoutes = require('./routes/qrCode.route');
 const chatRoutes = require('./routes/chat.route');
+const chatbotRoutes = require('./routes/chatbot.route');
 
 
 const seedDatabase = require('./seed');
@@ -89,6 +90,8 @@ app.use('/api/verifications', verificationRoutes);
 app.use('/api/commissions', commissionRoutes);
 app.use('/api/qr', qrRoutes);
 app.use('/api/chats', chatRoutes);
+app.use('/api/chatbot', chatbotRoutes);
+
 
 // Health check
 
