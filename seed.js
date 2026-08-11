@@ -5,6 +5,7 @@ const Service = require('./models/Service.model');
 const Booking = require('./models/Booking.model');
 const ProviderProfile = require('./models/ProviderProfile.model');
 const Wallet = require('./models/Wallet.model');
+const ErrandRunnerProfileModel = require('./models/ErrandRunnerProfile.model');
 
 const seedDatabase = async () => {
   try {
@@ -214,6 +215,43 @@ const seedDatabase = async () => {
       await customer.save();
       customerUsers.push(customer);
     }
+
+    const errandRunner = new User({
+      fullName: 'Errand Runner 1',
+      email: 'runner1@example.com',
+      phoneNumber: '07700900001',
+      password: 'Runner123!',
+      role: 'errand_runner',
+      isActive: true,
+      isVerified: true,
+      verificationStatus: 'approved',
+      acceptedTerms: true,
+      acceptedPrivacy: true,
+      over18: true,
+      address: {
+        street: '1 Runner Street',
+        town: 'London',
+        postcode: 'SW1A 1AA',
+      },
+      location: {
+        type: 'Point',
+        coordinates: [-0.1276, 51.5074],
+      },
+    });
+    
+    // Also create errand runner profile
+    const errandRunnerProfile = new ErrandRunnerProfileModel({
+      userId: errandRunner._id,
+      vehicleType: 'car',
+      maxWeightCapacity: 20,
+      maxDistancePreference: 15,
+      verificationStatus: 'approved',
+      isAvailable: true,
+      location: {
+        type: 'Point',
+        coordinates: [-0.1276, 51.5074],
+      },
+    });
     console.log(`Created ${customerUsers.length} customers`);
 
     // Create sample bookings

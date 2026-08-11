@@ -26,6 +26,8 @@ const commissionRoutes = require('./routes/commission.route');
 const qrRoutes = require('./routes/qrCode.route');
 const chatRoutes = require('./routes/chat.route');
 const chatbotRoutes = require('./routes/chatbot.route');
+const subscriptionRoutes = require('./routes/subscription.route');
+const subscriptionPlanRoutes = require('./routes/subscription.plan.route');
 
 
 const seedDatabase = require('./seed');
@@ -91,6 +93,8 @@ app.use('/api/commissions', commissionRoutes);
 app.use('/api/qr', qrRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/chatbot', chatbotRoutes);
+app.use('/api/subscription', subscriptionRoutes);
+app.use('/api/subscription-plans', subscriptionPlanRoutes);
 
 
 // Health check

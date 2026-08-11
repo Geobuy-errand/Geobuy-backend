@@ -27,7 +27,7 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["customer", "provider", "admin"],
+      enum: ["customer", "errand_runner", "provider", "admin"],
       default: "customer",
     },
     isActive: {
@@ -71,8 +71,8 @@ const userSchema = new mongoose.Schema(
     dbsDocument: String,
     verificationStatus: {
       type: String,
-      enum: ["pending", "approved", "rejected"],
-      default: "pending",
+      enum: ["pending", "approved", "rejected", "not_submitted"],
+      default: "not_submitted",
     },
     rejectionReason: String,
     averageRating: {
@@ -245,6 +245,10 @@ userSchema.methods.isCustomer = function () {
 
 userSchema.methods.isProvider = function () {
   return this.role === "provider";
+};
+
+userSchema.methods.isErrandRunner = function () {
+  return this.role === 'errand_runner';
 };
 
 // Check if user is admin

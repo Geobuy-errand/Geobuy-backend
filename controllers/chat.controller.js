@@ -1,7 +1,9 @@
 const Chat = require('../models/Chat.model');
 const Message = require('../models/Message.model');
 const User = require('../models/User.model');
+const Errand = require('../models/Errand.model');
 const Notification = require('../models/Notification.model');
+const createNotification = require('../utils/create-notification');
 
 // Get or create a chat
 exports.getOrCreateChat = async (req, res) => {
@@ -22,6 +24,7 @@ exports.getOrCreateChat = async (req, res) => {
         chat = new Chat({
           participants: [
             { userId: currentUserId },
+
           ],
           isSupportChat: true,
           supportStatus: 'open',
@@ -159,6 +162,7 @@ exports.sendMessage = async (req, res) => {
 
     // Find receiver
     const receiver = chat.participants.find(p => p.userId.toString() !== senderId.toString());
+
 
     // Create message
     const message = new Message({
@@ -546,9 +550,12 @@ exports.createErrandChat = async (req, res) => {
       }
   
       // Create new support chat
+      const botUser = await User.findOne({ role: 'admin', isActive: true }).sort({ createdAt: 1 });
+
       const chat = new Chat({
         participants: [
           { userId: userId },
+          { userId: botUser._id },
         ],
         isSupportChat: true,
         supportStatus: 'open',

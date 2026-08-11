@@ -1,5 +1,6 @@
 const User = require('../models/User.model');
 const ProviderProfile = require('../models/ProviderProfile.model');
+const ErrandRunnerProfileModel = require('../models/ErrandRunnerProfile.model');
 
 // Update profile
 exports.updateProfile = async (req, res) => {
@@ -25,10 +26,170 @@ exports.updateProfile = async (req, res) => {
       { new: true, runValidators: true }
     ).select('-password');
 
+    // If user is errand runner, update profile too
+    if (req.user.role === 'errand_runner') {
+      const runnerUpdates = {};
+      const runnerAllowed = [
+        'vehicleType',
+        'maxWeightCapacity',
+        'maxDistancePreference',
+        'preferredAreas',
+        'availableDays',
+        'availableHours',
+        'about',
+        'languages',
+        'skills',
+      ];
+      
+      runnerAllowed.forEach((field) => {
+        if (req.body[field] !== undefined) {
+          runnerUpdates[field] = req.body[field];
+        }
+      });
+
+      if (Object.keys(runnerUpdates).length > 0) {
+        await ErrandRunnerProfileModel.findOneAndUpdate(
+          { userId: req.user._id },
+          runnerUpdates,
+          { new: true }
+        );
+      }
+    }
+
+    // If user is service provider, update profile too
+    if (req.user.role === 'provider') {
+      const providerUpdates = {};
+      const providerAllowed = [
+        'serviceCategories',
+        'certifications',
+        'serviceAreas',
+        'hourlyRate',
+        'fixedRate',
+        'rateType',
+        'about',
+      ];
+      
+      providerAllowed.forEach((field) => {
+        if (req.body[field] !== undefined) {
+          providerUpdates[field] = req.body[field];
+        }
+      });
+
+      if (Object.keys(providerUpdates).length > 0) {
+        await ProviderProfile.findOneAndUpdate(
+          { userId: req.user._id },
+          providerUpdates,
+          { new: true }
+        );
+      }
+    }
+
     res.json({
       message: 'Profile updated successfully',
       user,
     });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getErrandRunnerProfile = async (req, res) => {
+  try {
+    const profile = await ErrandRunnerProfile.findOne({ userId: req.user._id });
+    if (!profile) {
+      return res.status(404).json({ message: 'Errand runner profile not found' });
+    }
+    res.json(profile);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.updateErrandRunnerAvailability = async (req, res) => {
+  try {
+    const { isAvailable, location } = req.body;
+
+    const updates = {};
+    if (isAvailable !== undefined) updates.isAvailable = isAvailable;
+    if (location) {
+      updates.location = {
+        type: 'Point',
+        coordinates: [location.lng, location.lat],
+      };
+      updates['location.lastUpdated'] = new Date();
+    }
+
+    const profile = await ErrandRunnerProfile.findOneAndUpdate(
+      { userId: req.user._id },
+      updates,
+      { new: true }
+    );
+
+    // Also update user's availability
+    await User.findByIdAndUpdate(req.user._id, { isAvailable });
+
+    // Emit socket event
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user_${req.user._id}`).emit('availability-updated', {
+        userId: req.user._id,
+        isAvailable: profile?.isAvailable || isAvailable,
+        location,
+      });
+    }
+
+    res.json({
+      message: 'Availability updated',
+      profile,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getAvailableErrandRunners = async (req, res) => {
+  try {
+    const { lat, lng, maxDistance = 10 } = req.query;
+
+    let query = {
+      isActive: true,
+      isAvailable: true,
+      verificationStatus: 'approved',
+    };
+
+    // Location-based query
+    if (lat && lng) {
+      query['location'] = {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [parseFloat(lng), parseFloat(lat)],
+          },
+          $maxDistance: maxDistance * 1000,
+        },
+      };
+    }
+
+    const runners = await ErrandRunnerProfile.find(query)
+      .populate('userId', 'fullName phoneNumber address averageRating totalReviews')
+      .limit(20);
+
+    res.json(runners);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getErrandRunnerById = async (req, res) => {
+  try {
+    const runner = await ErrandRunnerProfile.findById(req.params.id)
+      .populate('userId', 'fullName email phoneNumber address averageRating totalReviews');
+
+    if (!runner) {
+      return res.status(404).json({ message: 'Errand runner not found' });
+    }
+
+    res.json(runner);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
