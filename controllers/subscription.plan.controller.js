@@ -243,35 +243,64 @@ exports.seedDefaultPlans = async (req, res) => {
     const defaultPlans = [
       {
         name: 'Monthly',
-        description: 'Perfect for occasional users',
+        description: 'Perfect for occasional users - Pay as you go',
         interval: 'month',
-        price: 9.99,
+        price: 12.99,
         stripePriceId: process.env.STRIPE_MONTHLY_PRICE_ID || 'price_monthly_default',
         features: {
           unlimited_errands: true,
           priority_support: false,
-          discount: 20,
+          discount: 10,
           advanced_tracking: true,
+          basic_analytics: true,
         },
         isActive: true,
         isPopular: false,
         displayOrder: 1,
       },
       {
+        name: '6 Months',
+        description: 'Great value - Save 23% compared to monthly',
+        interval: 'month', // We'll handle the 6-month billing via Stripe
+        price: 29.99,
+        stripePriceId: process.env.STRIPE_SIX_MONTH_PRICE_ID || 'price_six_month_default',
+        features: {
+          unlimited_errands: true,
+          priority_support: true,
+          discount: 15,
+          advanced_tracking: true,
+          basic_analytics: true,
+          priority_matching: true,
+        },
+        isActive: true,
+        isPopular: false,
+        displayOrder: 2,
+        metadata: {
+          billingPeriod: '6_months',
+          savings: '23%',
+        },
+      },
+      {
         name: 'Yearly',
-        description: 'Best value for regular users - Save 30%',
+        description: 'Best value - Save 38% compared to monthly',
         interval: 'year',
-        price: 99.99,
+        price: 49.99,
         stripePriceId: process.env.STRIPE_YEARLY_PRICE_ID || 'price_yearly_default',
         features: {
           unlimited_errands: true,
           priority_support: true,
-          discount: 25,
+          discount: 20,
           advanced_tracking: true,
+          premium_analytics: true,
+          priority_matching: true,
+          dedicated_account_manager: true,
         },
         isActive: true,
         isPopular: true,
-        displayOrder: 2,
+        displayOrder: 3,
+        metadata: {
+          savings: '38%',
+        },
       },
     ];
 
@@ -280,6 +309,11 @@ exports.seedDefaultPlans = async (req, res) => {
     res.status(201).json({
       message: 'Default plans seeded successfully',
       plans,
+      pricing: {
+        monthly: '£12.99/month',
+        sixMonths: '£29.99/6 months',
+        yearly: '£49.99/year',
+      },
     });
   } catch (error) {
     console.error('Seed default plans error:', error);
