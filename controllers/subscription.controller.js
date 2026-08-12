@@ -392,6 +392,7 @@ exports.verifySubscriptionSession = async (req, res) => {
     }
   
     // Update subscription with Stripe data
+    console.log({session, plan, planId})
     subscription.stripeCustomerId = session.customer;
     subscription.stripeSubscriptionId = session.subscription;
     subscription.stripePriceId = session.line_items?.data[0]?.price?.id || plan.stripePriceId;
