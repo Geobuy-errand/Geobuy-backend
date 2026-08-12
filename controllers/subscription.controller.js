@@ -80,9 +80,12 @@ exports.createCheckoutSession = async (req, res) => {
         },
       ],
       mode: "subscription",
-      success_url:
-        successUrl ||
-        `${process.env.FRONTEND_URL}/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
+      // success_url:
+      //   successUrl ||
+      //   `${process.env.FRONTEND_URL}/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: successUrl 
+        ? `${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`
+        : `${process.env.FRONTEND_URL}/customer/subscriptions/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: cancelUrl || `${process.env.FRONTEND_URL}/${user.role}/subscription`,
       metadata: {
         userId: user._id.toString(),
