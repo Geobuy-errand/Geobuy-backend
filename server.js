@@ -7,7 +7,8 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const http = require('http');
 const { Server } = require('socket.io');
-const path = require('path');
+
+const subscriptionController = require('./controllers/subscription.controller');
 
 const authRoutes = require('./routes/auth.route');
 const userRoutes = require('./routes/user.route');
@@ -71,7 +72,11 @@ app.use(cors({
 
 app.use(cookieParser());
 
-app.use('/api/subscription', subscriptionRoutes);
+app.post(
+  '/api/subscription/webhook', 
+  express.raw({ type: 'application/json' }), 
+  subscriptionController.handleStripeWebhook
+);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -97,6 +102,7 @@ app.use('/api/services', serviceRoutes);
 app.use('/api/verifications', verificationRoutes);
 app.use('/api/commissions', commissionRoutes);
 app.use('/api/qr', qrRoutes);
+app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/chatbot', chatbotRoutes);
 app.use('/api/subscription-plans', subscriptionPlanRoutes);
