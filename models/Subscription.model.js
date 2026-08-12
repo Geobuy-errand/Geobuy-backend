@@ -26,7 +26,7 @@ const subscriptionSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['active', 'inactive', 'canceled', 'past_due', 'trialing'],
+      enum: ['active', 'inactive', 'canceled', 'past_due', 'trialing', 'incomplete'],
       default: 'inactive',
     },
     currentPeriodStart: {
