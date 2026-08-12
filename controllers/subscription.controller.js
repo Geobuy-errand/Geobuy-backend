@@ -70,36 +70,64 @@ exports.createCheckoutSession = async (req, res) => {
     }
 
     // Create checkout session
-    const session = await stripe.checkout.sessions.create({
-      customer: stripeCustomerId,
-      payment_method_types: ["card"],
-      line_items: [
-        {
-          price: plan.stripePriceId,
-          quantity: 1,
-        },
-      ],
-      mode: "subscription",
-      // success_url:
-      //   successUrl ||
-      //   `${process.env.FRONTEND_URL}/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
-      success_url: successUrl 
-        ? `${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`
-        : `${process.env.FRONTEND_URL}/customer/subscriptions/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: cancelUrl || `${process.env.FRONTEND_URL}/${user.role}/subscription`,
-      metadata: {
-        userId: user._id.toString(),
-        planId: plan._id.toString(),
-      },
-      subscription_data: {
-        trial_period_days: 7,
-        metadata: {
-          userId: user._id.toString(),
-          planId: plan._id.toString(),
-        },
-      },
-    });
+    // const session = await stripe.checkout.sessions.create({
+    //   customer: stripeCustomerId,
+    //   payment_method_types: ["card"],
+    //   line_items: [
+    //     {
+    //       price: plan.stripePriceId,
+    //       quantity: 1,
+    //     },
+    //   ],
+    //   mode: "subscription",
+    //   // success_url:
+    //   //   successUrl ||
+    //   //   `${process.env.FRONTEND_URL}/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
+    //   success_url: successUrl 
+    //     ? `${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`
+    //     : `${process.env.FRONTEND_URL}/${user?.role}/subscriptions/success?session_id={CHECKOUT_SESSION_ID}`,
+    //   cancel_url: cancelUrl || `${process.env.FRONTEND_URL}/${user.role}/subscriptions/cancel`,
+    //   metadata: {
+    //     userId: user._id.toString(),
+    //     planId: plan._id.toString(),
+    //   },
+    //   subscription_data: {
+    //     trial_period_days: 7,
+    //     metadata: {
+    //       userId: user._id.toString(),
+    //       planId: plan._id.toString(),
+    //     },
+    //   },
+    // });
 
+        // Create checkout session
+        const session = await stripe.checkout.sessions.create({
+          customer: stripeCustomerId,
+          payment_method_types: ["card"],
+          line_items: [
+            {
+              price: plan.stripePriceId,
+              quantity: 1,
+            },
+          ],
+          mode: "subscription",
+          success_url: successUrl 
+            ? `${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`
+            : `${process.env.FRONTEND_URL}/${user?.role}/subscriptions/success?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: cancelUrl || `${process.env.FRONTEND_URL}/${user.role}/subscriptions/cancel`,
+          metadata: {
+            userId: user._id.toString(),
+            planId: plan._id.toString(),
+          },
+          // ✅ Removed trial_period_days from subscription_data
+          subscription_data: {
+            metadata: {
+              userId: user._id.toString(),
+              planId: plan._id.toString(),
+            },
+          },
+        });
+    
     res.json({
       sessionId: session.id,
       sessionUrl: session.url,
