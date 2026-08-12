@@ -61,13 +61,20 @@ app.use(
     crossOriginResourcePolicy: { policy: "cross-origin" },
   })
 );
+
+
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true,
 }));
+
+
 app.use(cookieParser());
+
+app.use('/api/subscription', subscriptionRoutes);
+
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.get('/', (req, res)=>{
   return res.send('Welcome to GEOBUY Errands API');
@@ -82,7 +89,6 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/reviews', reviewRoutes);
-// app.use('/api/services', serviceRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/upload', uploadRoutes);
@@ -93,7 +99,6 @@ app.use('/api/commissions', commissionRoutes);
 app.use('/api/qr', qrRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/chatbot', chatbotRoutes);
-app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/subscription-plans', subscriptionPlanRoutes);
 
 
