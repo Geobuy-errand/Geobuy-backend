@@ -437,7 +437,7 @@ exports.verifySubscriptionSession = async (req, res) => {
     const stripeSubscriptionId = subscription.id;
     const customerId = subscription.customer;
   
-    console.log('📋 Handling subscription creation for Stripe ID:', stripeSubscriptionId);
+    console.log('📋 Handling subscription creation for Stripe ID:', stripeSubscriptionId, {subscription});
   
     // 1. Try finding by Stripe Subscription ID first
     let subscriptionRecord = await Subscription.findOne({
