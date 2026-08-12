@@ -461,36 +461,31 @@ exports.verifySubscriptionSession = async (req, res) => {
     const stripeSubscriptionId = subscription.id;
     const customerId = subscription.customer;
   
-    console.log('📋 Handling subscription creation for Stripe ID:', stripeSubscriptionId, {subscription});
-  
-    // 1. Try finding by Stripe Subscription ID first
-    let subscriptionRecord = await Subscription.findOne({
-      stripeSubscriptionId: stripeSubscriptionId,
-    });
-  
-    // 2. FALLBACK: If not found, look up by Stripe Customer ID (since metadata links them)
+    let subscriptionRecord = await Subscription.findOne({ stripeSubscriptionId });
     if (!subscriptionRecord) {
-      console.log(`🔍 Subscription ID not tracked yet. Searching via Customer ID: ${customerId}`);
-      subscriptionRecord = await Subscription.findOne({
-        stripeCustomerId: customerId,
-      });
+      subscriptionRecord = await Subscription.findOne({ stripeCustomerId: customerId });
     }
   
-    // 3. Absolute Safeguard if no draft exists
     if (!subscriptionRecord) {
-      console.log('⚠️ Critical: No local subscription tracking draft exists for Customer ID:', customerId);
+      console.log('⚠️ No local subscription tracking draft exists for Customer:', customerId);
       return;
     }
   
-    // 4. Update the record cleanly with correct millisecond dates
-    subscriptionRecord.stripeSubscriptionId = stripeSubscriptionId; // Link it now!
-    subscriptionRecord.status = subscription.status;
-    subscriptionRecord.currentPeriodStart = new Date(subscription.current_period_start * 1000);
-    subscriptionRecord.currentPeriodEnd = new Date(subscription.current_period_end * 1000);
-    subscriptionRecord.cancelAtPeriodEnd = subscription.cancel_at_period_end;
+    // ✅ DEFENSIVE PARSING: Extract values with fallback variables
+    const startSeconds = subscription.current_period_start || subscription.start_date || subscription.created;
+    const endSeconds = subscription.current_period_end || subscription.trial_end;
+  
+    subscriptionRecord.currentPeriodStart = startSeconds ? new Date(startSeconds * 1000) : new Date();
+    subscriptionRecord.currentPeriodEnd = endSeconds 
+      ? new Date(endSeconds * 1000) 
+      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // +30 days default
+  
+    subscriptionRecord.stripeSubscriptionId = stripeSubscriptionId;
+    subscriptionRecord.status = subscription.status; // Now safely accepts 'incomplete'
+    subscriptionRecord.cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
   
     await subscriptionRecord.save();
-    console.log('✅ Subscription successfully updated in DB:', subscriptionRecord._id);
+    console.log('✅ Subscription handled cleanly:', subscriptionRecord._id);
   }
   
   
@@ -505,15 +500,30 @@ exports.verifySubscriptionSession = async (req, res) => {
       console.log('⚠️ Subscription record not found for Stripe ID:', subscription.id);
       return;
     }
+
+    const startSeconds = subscription.current_period_start;
+  const endSeconds = subscription.current_period_end;
+
+  if (startSeconds) subscriptionRecord.currentPeriodStart = new Date(startSeconds * 1000);
+  if (endSeconds) subscriptionRecord.currentPeriodEnd = new Date(endSeconds * 1000);
+
+  subscriptionRecord.status = subscription.status;
+  subscriptionRecord.cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
+
+
+
+
   
     const previousStatus = subscriptionRecord.status;
     
-    subscriptionRecord.status = subscription.status;
+    // subscriptionRecord.status = subscription.status;
+    // subscriptionRecord.cancelAtPeriodEnd = subscription.cancel_at_period_end;
     subscriptionRecord.currentPeriodStart = new Date(subscription.current_period_start * 1000);
     subscriptionRecord.currentPeriodEnd = new Date(subscription.current_period_end * 1000);
-    subscriptionRecord.cancelAtPeriodEnd = subscription.cancel_at_period_end;
   
     await subscriptionRecord.save();
+  console.log('✅ Subscription status sync complete:', subscriptionRecord._id);
+
   
     // If status changed to canceled, update user
     if (subscription.status === 'canceled' && previousStatus !== 'canceled') {
