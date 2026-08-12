@@ -40,7 +40,7 @@ exports.createCheckoutSession = async (req, res) => {
     const { planId, successUrl, cancelUrl } = req.body;
     const user = req.user;
 
-    console.log("Creating checkout session for user:", user._id, "plan:", planId);
+    console.log("Creating checkout session for user:", user._id);
 
     // Get plan from database
     const plan = await SubscriptionPlan.findById(planId);
@@ -100,8 +100,6 @@ exports.createCheckoutSession = async (req, res) => {
       },
     });
 
-    console.log({session})
-
     res.json({
       sessionId: session.id,
       sessionUrl: session.url,
@@ -131,8 +129,8 @@ exports.handleStripeWebhook = async (req, res) => {
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    console.log('📦 Received Stripe webhook:', event.type, {event});
-    console.log('📦 Event data:', JSON.stringify(event.data.object, null, 2));
+    // console.log('📦 Received Stripe webhook:', event);
+    console.log('📦 Event data: Received stripes webhook', JSON.stringify(event.data.object, null, 2));
 
     // Handle different event types
     switch (event.type) {
@@ -381,8 +379,6 @@ exports.verifySubscriptionSession = async (req, res) => {
       console.error('❌ Plan not found:', planId);
       return;
     }
-  
-    console.log('📋 Plan found:', plan.name);
   
     // Find or create subscription record
     let subscription = await Subscription.findOne({ userId: userId });
