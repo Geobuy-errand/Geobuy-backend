@@ -49,8 +49,8 @@ const subscriptionSchema = new mongoose.Schema(
       type: Date,
     },
     features: {
-      type: Map,
-      of: Boolean,
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
     metadata: {
       type: mongoose.Schema.Types.Mixed,
