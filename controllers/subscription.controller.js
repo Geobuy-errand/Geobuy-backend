@@ -434,26 +434,41 @@ exports.verifySubscriptionSession = async (req, res) => {
   }
   
   async function handleSubscriptionCreated(subscription) {
-    console.log('📋 Subscription created:', subscription.id);
-    
-    // Find the subscription in our database
-    const subscriptionRecord = await Subscription.findOne({
-      stripeSubscriptionId: subscription.id,
+    const stripeSubscriptionId = subscription.id;
+    const customerId = subscription.customer;
+  
+    console.log('📋 Handling subscription creation for Stripe ID:', stripeSubscriptionId);
+  
+    // 1. Try finding by Stripe Subscription ID first
+    let subscriptionRecord = await Subscription.findOne({
+      stripeSubscriptionId: stripeSubscriptionId,
     });
   
+    // 2. FALLBACK: If not found, look up by Stripe Customer ID (since metadata links them)
     if (!subscriptionRecord) {
-      console.log('⚠️ Subscription record not found for Stripe ID:', subscription.id);
+      console.log(`🔍 Subscription ID not tracked yet. Searching via Customer ID: ${customerId}`);
+      subscriptionRecord = await Subscription.findOne({
+        stripeCustomerId: customerId,
+      });
+    }
+  
+    // 3. Absolute Safeguard if no draft exists
+    if (!subscriptionRecord) {
+      console.log('⚠️ Critical: No local subscription tracking draft exists for Customer ID:', customerId);
       return;
     }
   
+    // 4. Update the record cleanly with correct millisecond dates
+    subscriptionRecord.stripeSubscriptionId = stripeSubscriptionId; // Link it now!
     subscriptionRecord.status = subscription.status;
     subscriptionRecord.currentPeriodStart = new Date(subscription.current_period_start * 1000);
     subscriptionRecord.currentPeriodEnd = new Date(subscription.current_period_end * 1000);
     subscriptionRecord.cancelAtPeriodEnd = subscription.cancel_at_period_end;
   
     await subscriptionRecord.save();
-    console.log('✅ Subscription updated:', subscriptionRecord._id);
+    console.log('✅ Subscription successfully updated in DB:', subscriptionRecord._id);
   }
+  
   
   async function handleSubscriptionUpdated(subscription) {
     console.log('📋 Subscription updated:', subscription.id);
