@@ -19,9 +19,10 @@ const subscriptionSchema = new mongoose.Schema(
       type: String,
     },
     plan: {
-      type: String,
-      enum: ['basic', 'premium', 'pro'],
-      default: 'basic',
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'SubscriptionPlan',
+      required: true,
+
     },
     status: {
       type: String,
