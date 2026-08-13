@@ -15,7 +15,7 @@ router.post('/admin/confirm-payment', authMiddleware, requireRole('admin'), Paym
 router.post('/admin/release-funds', authMiddleware, requireRole('admin'), PaymentController.releaseFundsToProvider);
 router.post('/refund', authMiddleware, requireRole('admin'), PaymentController.refundPayment);
 router.get('/admin/all', authMiddleware, requireRole('admin'), PaymentController.getAllPayments);
-router.get('/admin/stats', authMiddleware, requireRole('admin'), PaymentController.getPaymentStats);
+router.get('/admin/stats', authMiddleware, requireRole('admin'), PaymentController.getPaymentStats); // ✅ ENSURE THIS EXISTS
 
 // Get payment by booking/errand
 router.get('/booking/:bookingId', authMiddleware, PaymentController.getPaymentByBooking);
