@@ -389,63 +389,64 @@ exports.verifySubscriptionSession = async (req, res) => {
   }
 };
 
-  async function handleCheckoutSessionCompleted(session) {
-    console.log('💰 Checkout session completed:', session.id);
-    
-    const userId = session.metadata?.userId;
-    const planId = session.metadata?.planId;
+async function handleCheckoutSessionCompleted(session) {
+  console.log('💰 Checkout session completed:', session.id);
   
-    if (!userId || !planId) {
-      console.error('❌ Missing userId or planId in session metadata');
-      console.log('📦 Metadata:', session.metadata);
-      return;
-    }
-  
-    // Get plan from database
-    const plan = await SubscriptionPlan.findById(planId);
-    if (!plan) {
-      console.error('❌ Plan not found:', planId);
-      return;
-    }
-  
-    // Find or create subscription record
-    let subscription = await Subscription.findOne({ userId: userId });
-  
-    if (!subscription) {
-      subscription = new Subscription({
-        userId: userId,
-        plan: planId,
-      });
-    }
-  
-    // Update subscription with Stripe data
-    subscription.stripeCustomerId = session.customer;
-    subscription.stripeSubscriptionId = session.subscription;
-    subscription.stripePriceId = session.line_items?.data[0]?.price?.id || plan.stripePriceId;
-    subscription.status = 'trialing';
-    subscription.currentPeriodStart = new Date();
-    subscription.currentPeriodEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7-day trial
-    subscription.trialStart = new Date();
-    subscription.trialEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    subscription.features = plan.features || {};
-    subscription.metadata = {
-      stripeSessionId: session.id,
-      ...session.metadata,
-    };
-  
-    await subscription.save();
-    console.log('✅ Subscription saved:', subscription._id);
-  
-    // Update user
-    await User.findByIdAndUpdate(userId, {
-      'subscription.isSubscribed': true,
-      'subscription.subscriptionStatus': 'trialing',
-      'subscription.subscriptionPlan': plan.name,
-      'subscription.subscriptionId': subscription._id,
-      'subscription.stripeCustomerId': session.customer,
+  const userId = session.metadata?.userId;
+  const planId = session.metadata?.planId;
+
+  if (!userId || !planId) {
+    console.error('❌ Missing userId or planId in session metadata');
+    console.log('📦 Metadata:', session.metadata);
+    return;
+  }
+
+  // Get plan from database
+  const plan = await SubscriptionPlan.findById(planId);
+  if (!plan) {
+    console.error('❌ Plan not found:', planId);
+    return;
+  }
+
+  // Find or create subscription record
+  let subscription = await Subscription.findOne({ userId: userId });
+
+  if (!subscription) {
+    subscription = new Subscription({
+      userId: userId,
+      plan: planId,
     });
-  
-    // Create notification
+  }
+
+  // Update subscription with Stripe data
+  subscription.stripeCustomerId = session.customer;
+  subscription.stripeSubscriptionId = session.subscription;
+  subscription.stripePriceId = session.line_items?.data[0]?.price?.id || plan.stripePriceId;
+  subscription.status = 'trialing';
+  subscription.currentPeriodStart = new Date();
+  subscription.currentPeriodEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  subscription.trialStart = new Date();
+  subscription.trialEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  subscription.features = plan.features || {};
+  subscription.metadata = {
+    stripeSessionId: session.id,
+    ...session.metadata,
+  };
+
+  await subscription.save();
+  console.log('✅ Subscription saved:', subscription._id);
+
+  // Update user
+  await User.findByIdAndUpdate(userId, {
+    'subscription.isSubscribed': true,
+    'subscription.subscriptionStatus': 'trialing',
+    'subscription.subscriptionPlan': plan.name,
+    'subscription.subscriptionId': subscription._id,
+    'subscription.stripeCustomerId': session.customer,
+  });
+
+  // ✅ Create notification with try-catch
+  try {
     await createNotification(
       userId,
       'subscription_started',
@@ -453,9 +454,14 @@ exports.verifySubscriptionSession = async (req, res) => {
       `Your ${plan.name} plan trial has started! You have 7 days free.`,
       { planId, subscriptionId: subscription._id }
     );
-  
-    console.log('✅ User updated and notification sent');
+    console.log('✅ Notification sent');
+  } catch (notifError) {
+    console.error('❌ Notification error:', notifError.message);
+    // Don't fail the webhook if notification fails
   }
+
+  console.log('✅ User updated');
+}
   
   async function handleSubscriptionCreated(subscription) {
     const stripeSubscriptionId = subscription.id;
