@@ -649,7 +649,12 @@ exports.getPaymentStats = async (req, res) => {
             { $group: { _id: null, total: { $sum: '$providerAmount' } } },
           ],
           pendingDisbursements: [
-            { $match: { status: 'succeeded', disbursementStatus: 'pending' } },
+            { 
+              $match: { 
+                status: 'succeeded', 
+                disbursementStatus: { $in: ['pending', 'processing'] } 
+              } 
+            },
             { $count: 'count' },
           ],
           todayRevenue: [
@@ -672,18 +677,38 @@ exports.getPaymentStats = async (req, res) => {
             },
             { $group: { _id: null, total: { $sum: '$amount' } } },
           ],
+          totalPayments: [
+            { $count: 'count' },
+          ],
+          successfulPayments: [
+            { $match: { status: 'succeeded' } },
+            { $count: 'count' },
+          ],
+          failedPayments: [
+            { $match: { status: 'failed' } },
+            { $count: 'count' },
+          ],
+          refundedPayments: [
+            { $match: { status: 'refunded' } },
+            { $count: 'count' },
+          ],
         },
       },
     ]);
 
-    const result = stats[0];
+    const result = stats[0] || {};
+    
     res.json({
-      totalRevenue: result.totalRevenue[0]?.total || 0,
-      totalPlatformFee: result.totalPlatformFee[0]?.total || 0,
-      totalProviderAmount: result.totalProviderAmount[0]?.total || 0,
-      pendingDisbursements: result.pendingDisbursements[0]?.count || 0,
-      todayRevenue: result.todayRevenue[0]?.total || 0,
-      thisMonthRevenue: result.thisMonthRevenue[0]?.total || 0,
+      totalRevenue: result.totalRevenue?.[0]?.total || 0,
+      totalPlatformFee: result.totalPlatformFee?.[0]?.total || 0,
+      totalProviderAmount: result.totalProviderAmount?.[0]?.total || 0,
+      pendingDisbursements: result.pendingDisbursements?.[0]?.count || 0,
+      todayRevenue: result.todayRevenue?.[0]?.total || 0,
+      thisMonthRevenue: result.thisMonthRevenue?.[0]?.total || 0,
+      totalPayments: result.totalPayments?.[0]?.count || 0,
+      successfulPayments: result.successfulPayments?.[0]?.count || 0,
+      failedPayments: result.failedPayments?.[0]?.count || 0,
+      refundedPayments: result.refundedPayments?.[0]?.count || 0,
     });
 
   } catch (error) {
