@@ -12,7 +12,8 @@ router.post('/create-checkout', authMiddleware, SubscriptionController.createChe
 router.post('/cancel', authMiddleware, SubscriptionController.cancelSubscription);
 router.post('/resume', authMiddleware, SubscriptionController.resumeSubscription);
 router.get('/status', authMiddleware, SubscriptionController.getSubscriptionStatus);
-router.get('/verify-session/:sessionId', authMiddleware, SubscriptionController.verifySubscriptionSession);
+router.get('/verify-session/:sessionId', SubscriptionController.verifySubscriptionSession);
+
 
 // Admin routes
 router.get('/admin/history', authMiddleware, requireRole('admin'), SubscriptionController.getSubscriptionHistory);
