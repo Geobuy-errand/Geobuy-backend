@@ -330,6 +330,7 @@ exports.getSubscriptionStatus = async (req, res) => {
   }
 };
 
+// Verify subscription session - ADD THIS METHOD
 exports.verifySubscriptionSession = async (req, res) => {
   try {
     const { sessionId } = req.params;
@@ -338,12 +339,16 @@ exports.verifySubscriptionSession = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Session ID required' });
     }
 
+    console.log('🔍 Verifying session:', sessionId);
+
     // Retrieve the session from Stripe
     const session = await stripe.checkout.sessions.retrieve(sessionId);
     
     if (!session) {
       return res.status(404).json({ success: false, message: 'Session not found' });
     }
+
+    console.log('📦 Session retrieved:', session.id, 'Status:', session.status);
 
     // Get the subscription
     const subscriptionId = session.subscription;
@@ -364,6 +369,18 @@ exports.verifySubscriptionSession = async (req, res) => {
       stripeSubscriptionId: subscriptionId,
     });
 
+    // Get plan name if exists
+    let planName = null;
+    if (localSubscription?.plan) {
+      const plan = await SubscriptionPlan.findById(localSubscription.plan);
+      planName = plan?.name || null;
+    }
+
+    const isSubscribed = localSubscription?.status === 'active' || 
+                         localSubscription?.status === 'trialing' ||
+                         subscriptionData?.status === 'active' ||
+                         subscriptionData?.status === 'trialing';
+
     res.json({
       success: true,
       session: {
@@ -377,8 +394,8 @@ exports.verifySubscriptionSession = async (req, res) => {
         status: localSubscription.status,
         plan: localSubscription.plan,
       } : null,
-      planName: localSubscription?.plan ? (await SubscriptionPlan.findById(localSubscription.plan))?.name : null,
-      isSubscribed: localSubscription?.status === 'active' || localSubscription?.status === 'trialing',
+      planName: planName,
+      isSubscribed: isSubscribed,
     });
   } catch (error) {
     console.error('Verify session error:', error);
@@ -388,7 +405,6 @@ exports.verifySubscriptionSession = async (req, res) => {
     });
   }
 };
-
 async function handleCheckoutSessionCompleted(session) {
   console.log('💰 Checkout session completed:', session.id);
   

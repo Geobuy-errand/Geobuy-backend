@@ -8,7 +8,7 @@ const rateLimit = require('express-rate-limit');
 const http = require('http');
 const { Server } = require('socket.io');
 
-const subscriptionController = require('./controllers/subscription.controller');
+const webhookController = require('./controllers/webhook.controller');
 
 const authRoutes = require('./routes/auth.route');
 const userRoutes = require('./routes/user.route');
@@ -75,7 +75,7 @@ app.use(cookieParser());
 app.post(
   '/api/subscription/webhook', 
   express.raw({ type: 'application/json' }), 
-  subscriptionController.handleStripeWebhook
+  webhookController.handleWebhook
 );
 
 app.use(express.json());
