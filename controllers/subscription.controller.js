@@ -42,6 +42,37 @@ exports.createCheckoutSession = async (req, res) => {
 
     console.log("Creating checkout session for user:", user._id);
 
+    const existingSubscription = await Subscription.findOne({
+      userId: user._id,
+      status: { $in: ['active', 'trialing'] },
+    });
+
+    if (existingSubscription) {
+      return res.status(400).json({
+        message: 'You already have an active subscription',
+        existingPlan: existingSubscription.plan,
+        status: existingSubscription.status,
+        currentPeriodEnd: existingSubscription.currentPeriodEnd,
+      });
+    }
+
+    // cancelled subscription that can be resumed
+    const canceledSubscription = await Subscription.findOne({
+      userId: user._id,
+      status: 'canceled',
+      cancelAtPeriodEnd: true,
+      currentPeriodEnd: { $gt: new Date() }, // Still within grace period
+    });
+
+    if (canceledSubscription) {
+      return res.status(400).json({
+        message: 'You have a canceled subscription that can be resumed',
+        canResume: true,
+        subscriptionId: canceledSubscription._id,
+        currentPeriodEnd: canceledSubscription.currentPeriodEnd,
+      });
+    }
+
     // Get plan from database
     const plan = await SubscriptionPlan.findById(planId);
     if (!plan) {
@@ -398,13 +429,14 @@ exports.verifySubscriptionSession = async (req, res) => {
       isSubscribed: isSubscribed,
     });
   } catch (error) {
-    console.error('Verify session error:', error);
+    console.error('❌ Verify session error:', error);
     res.status(500).json({ 
       success: false, 
       message: error.message 
     });
   }
 };
+
 async function handleCheckoutSessionCompleted(session) {
   console.log('💰 Checkout session completed:', session.id);
   
