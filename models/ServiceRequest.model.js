@@ -161,6 +161,34 @@ const serviceRequestSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    notificationsSent: [
+      {
+        type: {
+          type: String,
+          enum: ['invite', 'quote', 'accept', 'complete', 'cancel'],
+        },
+        sentAt: {
+          type: Date,
+          default: Date.now,
+        },
+        recipients: [
+          {
+            userId: {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: 'User',
+            },
+            notificationId: {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: 'Notification',
+            },
+            sent: {
+              type: Boolean,
+              default: true,
+            },
+          },
+        ],
+      },
+    ],
     expiresAt: {
       type: Date,
       default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days

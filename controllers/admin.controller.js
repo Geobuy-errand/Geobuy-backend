@@ -466,3 +466,60 @@ exports.getBookingAnalytics = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// Update user (admin only)
+exports.updateUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const updates = req.body;
+
+    // Prevent role changes and password updates here
+    const allowedUpdates = [
+      'fullName',
+      'phoneNumber',
+      'address',
+      'serviceCategories',
+      'isActive',
+      'verificationStatus',
+      'rejectionReason',
+      'bankDetails',
+      'serviceRates',
+      'about',
+      'availabilitySchedule',
+    ];
+
+    const updateData = {};
+    for (const key of allowedUpdates) {
+      if (updates[key] !== undefined) {
+        updateData[key] = updates[key];
+      }
+    }
+
+    const user = await User.findByIdAndUpdate(
+      userId,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // If serviceCategories were updated, also update ProviderProfile
+    if (updates.serviceCategories !== undefined) {
+      await ProviderProfile.findOneAndUpdate(
+        { userId: user._id },
+        { serviceCategories: updates.serviceCategories },
+        { new: true, upsert: true }
+      );
+    }
+
+    res.json({
+      message: 'User updated successfully',
+      user,
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};

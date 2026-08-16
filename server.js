@@ -30,6 +30,7 @@ const chatbotRoutes = require('./routes/chatbot.route');
 const subscriptionRoutes = require('./routes/subscription.route');
 const subscriptionPlanRoutes = require('./routes/subscription.plan.route');
 const settingsRoutes = require('./routes/setting.route');
+const seedRoutes = require('./routes/seed.route');
 
 
 const seedDatabase = require('./seed');
@@ -118,6 +119,8 @@ app.use('/api/chats', chatRoutes);
 app.use('/api/chatbot', chatbotRoutes);
 app.use('/api/subscription-plans', subscriptionPlanRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/seed', seedRoutes);
+
 
 
 

@@ -27,6 +27,11 @@ const serviceCategorySchema = new mongoose.Schema(
         required: true,
       }
     ],
+    type: {
+      type: String,
+      enum: ['provider', 'errand_runner'],
+      default: 'provider',
+    },
     isActive: {
       type: Boolean,
       default: true,

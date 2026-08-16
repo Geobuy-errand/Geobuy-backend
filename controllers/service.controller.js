@@ -7,6 +7,7 @@ const Notification = require('../models/Notification.model');
 const OSRMService = require('../services/osrmService');
 const NominatimService = require('../services/nominatimService');
 const ServiceCategoryModel = require('../models/ServiceCategory.model');
+const createNotification = require('../utils/create-notification')
 
 // ============================================================
 // SERVICE CRUD FUNCTIONS
@@ -168,10 +169,13 @@ exports.createServiceRequest = async (req, res) => {
       isUrgent,
       requiresDBS,
       requiresCertification,
-      invitedProviders, // Array of provider IDs to invite
+      invitedProviders,
     } = req.body;
 
-    const SERVICE_FEE = 1.99;
+    // Get settings for service fee
+    const settings = await Settings.getSettings();
+    const SERVICE_FEE = settings.pricing?.baseFee || 3.99;
+    const PLATFORM_FEE_PERCENTAGE = settings.pricing?.platformFeePercentage || 20;
 
     // Create service request
     const serviceRequest = new ServiceRequest({
@@ -187,6 +191,7 @@ exports.createServiceRequest = async (req, res) => {
       requiresDBS: requiresDBS || false,
       requiresCertification: requiresCertification || false,
       serviceFee: SERVICE_FEE,
+      platformFeePercentage: PLATFORM_FEE_PERCENTAGE,
       status: 'pending',
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       isPublic: true,
@@ -214,19 +219,20 @@ exports.createServiceRequest = async (req, res) => {
         });
         invitedCount++;
 
-        // Send notification to provider
-        const notification = new Notification({
-          userId: providerId,
-          type: 'new_service_request',
-          title: '📋 Service Request Invitation',
-          message: `You've been invited to quote for a ${category} service by ${req.user.fullName}`,
-          data: { 
+        // Send notification to provider using helper
+        await createNotification(
+          providerId,
+          'new_service_request',
+          '📋 New Service Request',
+          `You've been invited to quote for a ${category} service by ${req.user.fullName}`,
+          { 
             serviceRequestId: serviceRequest._id,
             customerId: req.user._id,
             customerName: req.user.fullName,
-          },
-        });
-        await notification.save();
+            category: category,
+            serviceType: serviceType,
+          }
+        );
 
         // Emit socket event
         const io = req.app.get('io');
@@ -243,6 +249,21 @@ exports.createServiceRequest = async (req, res) => {
       await serviceRequest.save();
     }
 
+    // Send notification to customer using helper
+    await createNotification(
+      req.user._id,
+      'service_request_created',
+      '✅ Service Request Created',
+      `Your service request for ${serviceType} has been created and sent to ${invitedCount} provider(s).`,
+      { 
+        serviceRequestId: serviceRequest._id,
+        category: category,
+        serviceType: serviceType,
+        invitedCount: invitedCount,
+        totalInvited: invitedProviders?.length || 0,
+      }
+    );
+
     res.status(201).json({
       message: 'Service request created successfully',
       serviceRequest,
@@ -251,7 +272,7 @@ exports.createServiceRequest = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Create service request error:', error);
+    console.error('❌ Create service request error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -397,15 +418,20 @@ exports.submitQuote = async (req, res) => {
     }
     await serviceRequest.save();
 
-    // Notify customer
-    const notification = new Notification({
-      userId: serviceRequest.customerId,
-      type: 'new_quote',
-      title: 'New Quote Received',
-      message: `${req.user.fullName} has submitted a quote for your service request`,
-      data: { serviceRequestId, quoteId: quote._id },
-    });
-    await notification.save();
+    // Notify customer using helper
+    await createNotification(
+      serviceRequest.customerId,
+      'quote_received',
+      '💰 New Quote Received',
+      `${req.user.fullName} has submitted a quote of £${amount} for your service request`,
+      { 
+        serviceRequestId: serviceRequest._id, 
+        quoteId: quote._id,
+        providerId: req.user._id,
+        providerName: req.user.fullName,
+        amount: amount,
+      }
+    );
 
     // Update request status if first quote
     if (serviceRequest.status === 'pending' || serviceRequest.status === 'open') {
@@ -428,7 +454,7 @@ exports.submitQuote = async (req, res) => {
       quote,
     });
   } catch (error) {
-    console.error('Submit quote error:', error);
+    console.error('❌ Submit quote error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -514,16 +540,23 @@ exports.negotiateQuote = async (req, res) => {
     serviceRequest.status = 'negotiating';
     await serviceRequest.save();
 
-    // Notify the other party
+    // Notify the other party using helper
     const recipientId = isCustomer ? quote.providerId : serviceRequest.customerId;
-    const notification = new Notification({
-      userId: recipientId,
-      type: 'quote_countered',
-      title: 'Counter-Offer Received',
-      message: `${req.user.fullName} has made a counter-offer of £${counterAmount}`,
-      data: { serviceRequestId: serviceRequest._id, quoteId: quote._id },
-    });
-    await notification.save();
+    const senderName = isCustomer ? req.user.fullName : 'Provider';
+    
+    await createNotification(
+      recipientId,
+      'quote_countered',
+      '🔄 Counter-Offer Received',
+      `${senderName} has made a counter-offer of £${counterAmount}`,
+      { 
+        serviceRequestId: serviceRequest._id, 
+        quoteId: quote._id,
+        amount: counterAmount,
+        from: from,
+        message: message || '',
+      }
+    );
 
     // Emit socket event
     const io = req.app.get('io');
@@ -543,7 +576,7 @@ exports.negotiateQuote = async (req, res) => {
       negotiationHistory: serviceRequest.negotiationHistory,
     });
   } catch (error) {
-    console.error('Negotiate quote error:', error);
+    console.error('❌ Negotiate quote error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -578,15 +611,32 @@ exports.acceptQuote = async (req, res) => {
     serviceRequest.status = 'provider_selected';
     await serviceRequest.save();
 
-    // Notify provider
-    const notification = new Notification({
-      userId: quote.providerId,
-      type: 'quote_accepted',
-      title: 'Quote Accepted! 🎉',
-      message: `Your quote has been accepted for ${serviceRequest.serviceType}`,
-      data: { serviceRequestId: serviceRequest._id },
-    });
-    await notification.save();
+    // Notify provider using helper
+    await createNotification(
+      quote.providerId,
+      'quote_accepted',
+      '🎉 Quote Accepted!',
+      `Your quote of £${finalPrice || quote.amount} has been accepted for ${serviceRequest.serviceType}`,
+      { 
+        serviceRequestId: serviceRequest._id,
+        customerId: req.user._id,
+        customerName: req.user.fullName,
+        finalPrice: finalPrice || quote.amount,
+      }
+    );
+
+    // Notify customer using helper
+    await createNotification(
+      req.user._id,
+      'service_request_accepted',
+      '✅ Service Request Accepted',
+      `Your service request has been accepted by ${quote.providerId.fullName || 'the provider'}`,
+      { 
+        serviceRequestId: serviceRequest._id,
+        providerId: quote.providerId,
+        finalPrice: finalPrice || quote.amount,
+      }
+    );
 
     // Emit socket event
     const io = req.app.get('io');
@@ -603,7 +653,7 @@ exports.acceptQuote = async (req, res) => {
       serviceRequest,
     });
   } catch (error) {
-    console.error('Accept quote error:', error);
+    console.error('❌ Accept quote error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -645,12 +695,29 @@ exports.rejectQuote = async (req, res) => {
     });
     await serviceRequest.save();
 
+    // Notify the other party using helper
+    const recipientId = isCustomer ? quote.providerId : serviceRequest.customerId;
+    const senderName = isCustomer ? 'Customer' : 'Provider';
+    
+    await createNotification(
+      recipientId,
+      'quote_rejected',
+      '❌ Quote Rejected',
+      `Your quote has been rejected${reason ? `: ${reason}` : ''}`,
+      { 
+        serviceRequestId: serviceRequest._id,
+        quoteId: quote._id,
+        reason: reason || 'No reason provided',
+        rejectedBy: senderName,
+      }
+    );
+
     res.json({
       message: 'Quote rejected',
       quote,
     });
   } catch (error) {
-    console.error('Reject quote error:', error);
+    console.error('❌ Reject quote error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -868,7 +935,14 @@ exports.startServiceRequest = async (req, res) => {
 
 exports.getServiceCategories = async (req, res) => {
   try {
-    const categories = await ServiceCategoryModel.find({ isActive: true })
+    const { type } = req.query; // Optional filter by type
+    
+    let query = { isActive: true };
+    if (type) {
+      query.type = type;
+    }
+    
+    const categories = await ServiceCategoryModel.find(query)
       .sort({ displayOrder: 1, name: 1 });
     
     res.json(categories);
@@ -980,15 +1054,6 @@ exports.getServiceProviders = async (req, res) => {
       limit = 20 
     } = req.query;
     
-    console.log('🔍 getServiceProviders called with:', { 
-      category, 
-      dbsChecked, 
-      insured, 
-      lat, 
-      lng, 
-      radius,
-      limit 
-    });
     
     let query = {
       role: 'provider',
@@ -996,9 +1061,7 @@ exports.getServiceProviders = async (req, res) => {
       verificationStatus: 'approved',
     };
 
-    // ============================================================
     // CATEGORY MATCHING - FIXED
-    // ============================================================
     if (category) {
       
       // Try to find the category in the database

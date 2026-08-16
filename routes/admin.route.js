@@ -31,5 +31,6 @@ router.delete('/reviews/:id', authMiddleware, requireRole('admin'), AdminControl
 // Analytics
 router.get('/analytics/revenue', authMiddleware, requireRole('admin'), AdminController.getRevenueAnalytics);
 router.get('/analytics/bookings', authMiddleware, requireRole('admin'), AdminController.getBookingAnalytics);
+router.put('/users/:userId', authMiddleware, requireRole('admin'), AdminController.updateUser);
 
 module.exports = router;
