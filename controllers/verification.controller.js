@@ -35,6 +35,62 @@ exports.submitVerification = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+// Request verification review
+exports.requestVerificationReview = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // Check if user already has a pending verification
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.verificationStatus === 'approved') {
+      return res.status(400).json({ success: false, message: 'Already verified' });
+    }
+
+    if (user.verificationStatus === 'pending') {
+      return res.status(400).json({ success: false, message: 'Verification already pending' });
+    }
+
+    // Check if all required documents are uploaded
+    const hasIdentity = user.documents?.passport;
+    const hasAddress = user.documents?.proofOfAddress;
+    const hasWork = user.documents?.rightToWork;
+
+    if (!hasIdentity || !hasAddress || !hasWork) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Please upload all required documents before requesting verification' 
+      });
+    }
+
+    // Update user status to pending
+    user.verificationStatus = 'pending';
+    await user.save();
+
+    // Notify admins
+    const admins = await User.find({ role: 'admin', isActive: true });
+    for (const admin of admins) {
+      await createNotification(
+        admin._id,
+        'verification_request',
+        '📋 New Verification Request',
+        `${user.fullName} has submitted documents for verification`,
+        { userId: user._id }
+      );
+    }
+
+    res.json({
+      success: true,
+      message: 'Verification request submitted successfully',
+    });
+  } catch (error) {
+    console.error('Request verification error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
 
 // Get user's verifications
 exports.getMyVerifications = async (req, res) => {

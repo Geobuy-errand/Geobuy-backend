@@ -29,6 +29,7 @@ const chatRoutes = require('./routes/chat.route');
 const chatbotRoutes = require('./routes/chatbot.route');
 const subscriptionRoutes = require('./routes/subscription.route');
 const subscriptionPlanRoutes = require('./routes/subscription.plan.route');
+const settingsRoutes = require('./routes/setting.route');
 
 
 const seedDatabase = require('./seed');
@@ -37,17 +38,31 @@ const seedDatabase = require('./seed');
 const app = express();
 
 app.set('trust proxy', 1);
+
+
 const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
     origin: process.env.FRONTEND_URL || 'http://localhost:5173',
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   },
+  transports: ['websocket', 'polling'],
+  path: '/socket.io',
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
 
 app.set('io', io);
+
+const corsOptions = {
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+};
 
 // Rate limiting
 const limiter = rateLimit({
@@ -63,11 +78,7 @@ app.use(
   })
 );
 
-
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-  credentials: true,
-}));
+app.use(cors(corsOptions));
 
 
 app.use(cookieParser());
@@ -106,6 +117,8 @@ app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/chatbot', chatbotRoutes);
 app.use('/api/subscription-plans', subscriptionPlanRoutes);
+app.use('/api/settings', settingsRoutes);
+
 
 
 // Health check
@@ -127,34 +140,35 @@ app.get('/api/health', (req, res) => {
 
 // Socket.io
 io.on('connection', (socket) => {
-  console.log('New client connected:', socket.id);
+  console.log('🟢 New client connected:', socket.id);
+  console.log('📡 Transport:', socket.conn.transport.name);
 
   socket.on('admin-join', () => {
     socket.join('admin_room');
-    console.log('📢 Admin joined admin_room');
+    // console.log('📢 Admin joined admin_room');
   });
 
   // Join provider room
   socket.on('provider-join', (providerId) => {
     socket.join(`provider_${providerId}`);
-    console.log(`📢 Provider ${providerId} joined their room`);
+    // console.log(`📢 Provider ${providerId} joined their room`);
   });
 
   // Join customer room
   socket.on('customer-join', (customerId) => {
     socket.join(`customer_${customerId}`);
-    console.log(`📢 Customer ${customerId} joined their room`);
+    // console.log(`📢 Customer ${customerId} joined their room`);
   });
 
   // Join errand room
   socket.on('join-errand', (errandId) => {
     socket.join(`errand_${errandId}`);
-    console.log(`📢 Socket joined errand ${errandId}`);
+    // console.log(`📢 Socket joined errand ${errandId}`);
   });
 
   socket.on('join-booking', (bookingId) => {
     socket.join(`booking_${bookingId}`);
-    console.log(`📢 Socket joined booking ${bookingId}`);
+    // console.log(`📢 Socket joined booking ${bookingId}`);
   });
 
   socket.on('send-message', (data) => {

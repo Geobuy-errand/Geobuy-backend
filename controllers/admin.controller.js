@@ -126,34 +126,97 @@ exports.getDashboardStats = async (req, res) => {
 };
 
 // Get all users (admin)
+// Get all users (admin) - with server-side pagination and verification filter
 exports.getUsers = async (req, res) => {
   try {
-    const { role, status, search } = req.query;
+    const { 
+      role, 
+      status, 
+      search, 
+      verificationStatus,
+      page = 1, 
+      limit = 10 
+    } = req.query;
+    
+    // Parse pagination params
+    const pageNumber = parseInt(page, 10) || 1;
+    const limitNumber = parseInt(limit, 10) || 10;
+    const skip = (pageNumber - 1) * limitNumber;
+    
     const query = {};
     
-    // Set the default rule: Exclude admins
-    query.role = { $ne: 'admin' };
+    // Set the default rule: Exclude admins unless explicitly asked
+    if (role !== 'admin') {
+      query.role = { $ne: 'admin' };
+    }
     
-    // Only narrow down by role if it's explicitly 'customer' or 'provider'
-    if (role && role !== 'admin') {
+    // Filter by specific role
+    if (role && role !== 'admin' && role !== 'all') {
       query.role = role;
     }
     
+    // Filter by active status
     if (status === 'active') query.isActive = true;
     if (status === 'inactive') query.isActive = false;
     
+    // ✅ Filter by verification status (for providers)
+    if (verificationStatus) {
+      query.verificationStatus = verificationStatus;
+    }
+    
+    // Search by name or email
     if (search) {
       query.$or = [
         { fullName: { $regex: search, $options: 'i' } },
         { email: { $regex: search, $options: 'i' } },
+        { phoneNumber: { $regex: search, $options: 'i' } },
       ];
     }
     
+    // Get total count for pagination
+    const totalUsers = await User.countDocuments(query);
+    
+    // Get paginated users
     const users = await User.find(query)
       .select('-password')
-      .sort({ createdAt: -1 });
-
-    res.json(users);
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNumber);
+    
+    // Calculate total pages
+    const totalPages = Math.ceil(totalUsers / limitNumber);
+    
+    // ✅ Get stats for verification status (for providers)
+    let stats = {};
+    if (role === 'provider' || !role) {
+      const verifiedCount = await User.countDocuments({ 
+        ...query, 
+        verificationStatus: 'approved' 
+      });
+      const pendingCount = await User.countDocuments({ 
+        ...query, 
+        verificationStatus: 'pending' 
+      });
+      const rejectedCount = await User.countDocuments({ 
+        ...query, 
+        verificationStatus: 'rejected' 
+      });
+      
+      stats = {
+        verified: verifiedCount,
+        pending: pendingCount,
+        rejected: rejectedCount,
+      };
+    }
+    
+    res.json({
+      users,
+      total: totalUsers,
+      totalPages,
+      currentPage: pageNumber,
+      limit: limitNumber,
+      stats,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

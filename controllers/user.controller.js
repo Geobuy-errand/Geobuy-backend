@@ -1,6 +1,6 @@
 const User = require('../models/User.model');
 const ProviderProfile = require('../models/ProviderProfile.model');
-const ErrandRunnerProfileModel = require('../models/ErrandRunnerProfile.model');
+const ErrandRunnerProfile = require('../models/ErrandRunnerProfile.model');
 
 // Update profile
 exports.updateProfile = async (req, res) => {

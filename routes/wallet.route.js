@@ -6,8 +6,8 @@ const WalletController = require('../controllers/wallet.controller');
 // Provider wallet routes
 router.get('/', authMiddleware, WalletController.getWallet);
 router.get('/transactions', authMiddleware, WalletController.getTransactions);
-router.post('/withdraw', authMiddleware, requireRole('provider'), WalletController.requestWithdrawal);
-router.get('/withdrawals', authMiddleware, WalletController.getWithdrawals);
+router.post('/withdraw', authMiddleware, requireRole('provider', 'errand_runner'), WalletController.requestWithdrawal);
+router.get('/withdrawals', authMiddleware, requireRole('provider', 'errand_runner'), WalletController.getWithdrawals);
 
 // Admin wallet routes
 router.put('/withdrawals/:id/process', authMiddleware, requireRole('admin'), WalletController.processWithdrawal);

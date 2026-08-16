@@ -8,11 +8,11 @@ const { upload } = require('../middleware/upload');
 
 // Get all errands
 router.get('/', authMiddleware, ErrandController.getErrands);
-router.get('/available', authMiddleware, requireRole('provider'), ErrandController.getAvailableErrands);
+router.get('/available', authMiddleware, requireRole('errand_runner'), ErrandController.getAvailableErrands);
 router.get('/:id', authMiddleware, ErrandController.getErrandById);
 router.post('/', authMiddleware, requireRole('customer'), ErrandController.createErrand);
-router.put('/:id/accept', authMiddleware, requireRole('provider'), ErrandController.acceptErrand);
-router.put('/:id/status', authMiddleware, ErrandController.updateErrandStatus);
+router.put('/:id/accept', authMiddleware, requireRole('errand_runner'), ErrandController.acceptErrand);
+router.put('/:id/status', authMiddleware, requireRole('errand_runner', 'admin'), ErrandController.updateErrandStatus);
 
 router.get('/:id/qr-code', authMiddleware, QRCodeController.generateQRCode);
 router.post('/:id/scan-qr', authMiddleware, QRCodeController.scanQRCode);

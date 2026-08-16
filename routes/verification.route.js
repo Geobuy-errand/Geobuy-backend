@@ -14,5 +14,8 @@ router.get('/pending', authMiddleware, requireRole('admin'), VerificationControl
 
 // Admin: Review verification
 router.put('/:id/review', authMiddleware, requireRole('admin'), VerificationController.reviewVerification);
+// Add this route
+
+router.post('/request-review', authMiddleware, VerificationController.requestVerificationReview);
 
 module.exports = router;

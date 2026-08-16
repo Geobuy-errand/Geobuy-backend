@@ -49,6 +49,7 @@ const createNotification = async (userId, type, title, message, data = {}) => {
       'funds_released',
       'commission_generated',
       'commission_paid',
+      'errand_cancelled'
     ];
 
     // If type is not in validTypes, use 'system' as fallback

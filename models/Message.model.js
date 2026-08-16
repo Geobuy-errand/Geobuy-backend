@@ -7,6 +7,14 @@ const messageSchema = new mongoose.Schema(
       ref: 'Chat',
       required: true,
     },
+    bookingId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Booking',
+    },
+    errandId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Errand',
+    },
     senderId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',

@@ -90,26 +90,59 @@ exports.registerProvider = async (req, res) => {
       informationTrue,
     } = req.body;
 
-    // Check if user already exists
+    console.log('📝 Registering provider:', email);
+
+    // Check if user exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ message: 'Email already registered' });
+      return res.status(400).json({ message: 'User already exists' });
     }
 
+    // Validate required fields
+    if (!fullName || !email || !phoneNumber || !password) {
+      return res.status(400).json({ message: 'Please fill in all required fields' });
+    }
+
+    if (!over18) {
+      return res.status(400).json({ message: 'You must be over 18 to register' });
+    }
+
+    if (!acceptedTerms || !acceptedPrivacy || !informationTrue) {
+      return res.status(400).json({ message: 'Please accept all terms and conditions' });
+    }
+
+    // Create user
     const user = new User({
       fullName,
-      dateOfBirth,
       email,
       phoneNumber,
       password,
-      address,
-      bankDetails,
-      renderCareServices,
+      role: 'provider',
+      dateOfBirth: new Date(dateOfBirth),
+      address: {
+        street: address.street,
+        town: address.town,
+        postcode: address.postcode,
+      },
+      bankDetails: {
+        bankName: bankDetails.bankName,
+        sortCode: bankDetails.sortCode,
+        accountNumber: bankDetails.accountNumber,
+      },
+      renderCareServices: renderCareServices || false,
       over18,
       acceptedTerms,
       acceptedPrivacy,
-      role: 'provider',
+      informationTrue,
       verificationStatus: 'pending',
+      isActive: true,
+      isVerified: false,
+      // Initialize with empty serviceCategories - they can add later in profile
+      serviceCategories: [],
+      location: {
+        type: 'Point',
+        coordinates: [0, 0], // Will be updated with geocoding
+      },
     });
 
     await user.save();
@@ -117,44 +150,54 @@ exports.registerProvider = async (req, res) => {
     // Create provider profile
     const providerProfile = new ProviderProfile({
       userId: user._id,
-      serviceAreas: [address.town],
-      verificationSubmittedAt: new Date(),
+      serviceCategories: [],
+      verificationStatus: 'pending',
+      isVerified: false,
+      about: '',
+      completedJobs: 0,
+      totalEarnings: 0,
+      completionRate: 0,
     });
 
     await providerProfile.save();
 
     // Create wallet
+    const Wallet = require('../models/Wallet.model');
     const wallet = new Wallet({
       userId: user._id,
+      balance: 0,
+      totalEarned: 0,
     });
 
     await wallet.save();
 
     // Generate JWT
+    const jwt = require('jsonwebtoken');
     const token = jwt.sign(
-      { userId: user._id, email: user.email, role: user.role },
+      { id: user._id, role: user.role },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRE || '7d' }
     );
 
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    console.log('✅ Provider registered successfully:', email);
 
     res.status(201).json({
-      message: 'Provider registered successfully. Awaiting verification.',
+      message: 'Provider registered successfully',
+      token,
       user: {
         id: user._id,
         fullName: user.fullName,
         email: user.email,
+        phoneNumber: user.phoneNumber,
         role: user.role,
+        serviceCategories: user.serviceCategories || [],
         verificationStatus: user.verificationStatus,
+        isActive: user.isActive,
+        isVerified: user.isVerified,
       },
     });
   } catch (error) {
+    console.error('❌ Register provider error:', error);
     res.status(500).json({ message: error.message });
   }
 };

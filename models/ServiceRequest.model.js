@@ -126,6 +126,41 @@ const serviceRequestSchema = new mongoose.Schema(
         respondedAt: Date,
       }
     ],
+    invitedProviders: [
+      {
+        providerId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+        },
+        matchScore: Number,
+        distance: Number,
+        status: {
+          type: String,
+          enum: ['pending', 'invited', 'declined', 'accepted'],
+          default: 'pending',
+        },
+        invitedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        quote: {
+          amount: Number,
+          message: String,
+          estimatedDuration: Number,
+          submittedAt: Date,
+        },
+      }
+    ],
+    selectedProviders: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      }
+    ],
+    isPublic: {
+      type: Boolean,
+      default: true,
+    },
     expiresAt: {
       type: Date,
       default: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days

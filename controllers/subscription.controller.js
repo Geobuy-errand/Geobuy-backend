@@ -307,7 +307,9 @@ exports.getSubscriptionHistory = async (req, res) => {
   try {
     const subscriptions = await Subscription.find()
       .populate("userId", "fullName email")
+      .populate("plan")
       .sort({ createdAt: -1 });
+    
 
     const stats = {
       total: subscriptions.length,

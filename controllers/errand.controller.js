@@ -767,6 +767,7 @@ exports.updateErrandStatus = async (req, res) => {
     const isCustomer = errand.customerId._id.toString() === req.user._id.toString();
     const isProvider = errand.providerId && errand.providerId._id.toString() === req.user._id.toString();
 
+
     if (!isCustomer && !isProvider && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Access denied' });
     }
@@ -961,6 +962,76 @@ exports.getErrandById = async (req, res) => {
 
     res.json(errand);
   } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getErrandsByStatus = async (req, res) => {
+  try {
+    const { status } = req.params;
+    let query = { status };
+
+    if (req.user.role === 'customer') {
+      query.customerId = req.user._id;
+    } else if (req.user.role === 'errand_runner') {
+      query.providerId = req.user._id;
+    } else if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    // Validate status
+    const validStatuses = ['pending', 'accepted', 'en_route', 'collected', 'delivered', 'completed', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ message: 'Invalid status' });
+    }
+
+    const errands = await Errand.find(query)
+      .populate('customerId', 'fullName email phoneNumber')
+      .populate('providerId', 'fullName email phoneNumber')
+      .sort({ createdAt: -1 });
+
+    res.json(errands);
+  } catch (error) {
+    console.error('Get errands by status error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getErrandStats = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const userRole = req.user.role;
+
+    let query = {};
+    if (userRole === 'customer') {
+      query.customerId = userId;
+    } else if (userRole === 'errand_runner') {
+      query.providerId = userId;
+    }
+
+    const stats = {
+      total: await Errand.countDocuments(query),
+      pending: await Errand.countDocuments({ ...query, status: 'pending' }),
+      accepted: await Errand.countDocuments({ ...query, status: 'accepted' }),
+      enRoute: await Errand.countDocuments({ ...query, status: 'en_route' }),
+      collected: await Errand.countDocuments({ ...query, status: 'collected' }),
+      delivered: await Errand.countDocuments({ ...query, status: 'delivered' }),
+      completed: await Errand.countDocuments({ ...query, status: 'completed' }),
+      cancelled: await Errand.countDocuments({ ...query, status: 'cancelled' }),
+    };
+
+    // Get total earnings for errand runner
+    if (userRole === 'errand_runner') {
+      const earnings = await Errand.aggregate([
+        { $match: { providerId: userId, status: { $in: ['delivered', 'completed'] } } },
+        { $group: { _id: null, total: { $sum: '$providerAmount' } } },
+      ]);
+      stats.totalEarnings = earnings[0]?.total || 0;
+    }
+
+    res.json(stats);
+  } catch (error) {
+    console.error('Get errand stats error:', error);
     res.status(500).json({ message: error.message });
   }
 };
