@@ -1,14 +1,11 @@
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const Subscription = require("../models/Subscription.model");
-const SubscriptionPlan = require("../models/SubscriptionPlan.model");
 const Payment = require("../models/Payment.model");
 const Transaction = require("../models/Transaction.model");
 const Errand = require("../models/Errand.model");
-const Booking = require("../models/Booking.model");
-const Wallet = require("../models/Wallet.model");
 const User = require("../models/User.model");
-const Notification = require("../models/Notification.model");
 const createNotification = require("../utils/create-notification");
+const ConnectionModel = require("../models/Connection.model");
 
 /**
  * Unified Stripe Webhook Handler
@@ -98,79 +95,6 @@ exports.handleWebhook = async (req, res) => {
 // ============================================================
 // SUBSCRIPTION HANDLERS
 // ============================================================
-
-async function handleCheckoutSessionCompleted(session) {
-  console.log("💰 Checkout session completed:", session.id);
-
-  const userId = session.metadata?.userId;
-  const planId = session.metadata?.planId;
-
-  if (!userId || !planId) {
-    console.error("❌ Missing userId or planId in session metadata");
-    console.log("📦 Metadata:", session.metadata);
-    return;
-  }
-
-  // Get plan from database
-  const plan = await SubscriptionPlan.findById(planId);
-  if (!plan) {
-    console.error("❌ Plan not found:", planId);
-    return;
-  }
-
-  // Find or create subscription record
-  let subscription = await Subscription.findOne({ userId });
-
-  if (!subscription) {
-    subscription = new Subscription({
-      userId,
-      plan: planId,
-    });
-  }
-
-  // Update subscription with Stripe data
-  subscription.stripeCustomerId = session.customer;
-  subscription.stripeSubscriptionId = session.subscription;
-  subscription.stripePriceId = session.line_items?.data[0]?.price?.id || plan.stripePriceId;
-  subscription.status = "trialing";
-  subscription.currentPeriodStart = new Date();
-  subscription.currentPeriodEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  subscription.trialStart = new Date();
-  subscription.trialEnd = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  subscription.features = plan.features || {};
-  subscription.metadata = {
-    stripeSessionId: session.id,
-    ...session.metadata,
-  };
-
-  await subscription.save();
-  console.log("✅ Subscription saved:", subscription._id);
-
-  // Update user
-  await User.findByIdAndUpdate(userId, {
-    "subscription.isSubscribed": true,
-    "subscription.subscriptionStatus": "trialing",
-    "subscription.subscriptionPlan": plan.name,
-    "subscription.subscriptionId": subscription._id,
-    "subscription.stripeCustomerId": session.customer,
-  });
-
-  // Create notification
-  try {
-    await createNotification(
-      userId,
-      "subscription_started",
-      "🎉 Subscription Started",
-      `Your ${plan.name} plan trial has started! You have 7 days free.`,
-      { planId, subscriptionId: subscription._id }
-    );
-    console.log("✅ Notification sent");
-  } catch (notifError) {
-    console.error("❌ Notification error:", notifError.message);
-  }
-
-  console.log("✅ User updated");
-}
 
 async function handleSubscriptionCreated(subscription) {
   console.log("📋 Subscription created:", subscription.id);
@@ -354,102 +278,6 @@ async function handleInvoicePaymentFailed(invoice) {
 // PAYMENT HANDLERS
 // ============================================================
 
-async function handlePaymentIntentSucceeded(paymentIntent) {
-  console.log("💰 Payment succeeded:", paymentIntent.id);
-
-  const metadata = paymentIntent.metadata || {};
-  const { errandId, bookingId, paymentId } = metadata;
-
-  // Find the payment record
-  let payment = await Payment.findById(paymentId);
-  if (!payment) {
-    payment = await Payment.findOne({ paymentIntentId: paymentIntent.id });
-  }
-
-  if (!payment) {
-    console.log("⚠️ Payment record not found for intent:", paymentIntent.id);
-    return;
-  }
-
-  // Update payment status
-  payment.status = "succeeded";
-  payment.releasedAt = new Date();
-  payment.stripePaymentIntentId = paymentIntent.id;
-  await payment.save();
-
-  // Create transaction record
-  const transaction = new Transaction({
-    userId: payment.customerId,
-    type: "payment",
-    amount: -payment.amount,
-    status: "completed",
-    description: `Payment for errand #${payment.errandId || payment.bookingId}`,
-    reference: paymentIntent.id,
-    stripeTransactionId: paymentIntent.id,
-    metadata: {
-      paymentId: payment._id,
-      errandId: payment.errandId,
-      bookingId: payment.bookingId,
-    },
-    completedAt: new Date(),
-  });
-  await transaction.save();
-
-  // Update errand payment status
-  if (payment.errandId) {
-    await Errand.findByIdAndUpdate(payment.errandId, {
-      paymentStatus: "paid",
-      paymentId: payment._id,
-      paymentIntentId: paymentIntent.id,
-    });
-  }
-
-  // Notify customer
-  await createNotification(
-    payment.customerId,
-    "payment_successful",
-    "💳 Payment Successful",
-    `Your payment of £${payment.amount.toFixed(2)} has been confirmed`,
-    { paymentId: payment._id, errandId: payment.errandId }
-  );
-
-  // Notify provider that funds are in escrow
-  if (payment.providerId) {
-    await createNotification(
-      payment.providerId,
-      "payment_escrow",
-      "🔒 Funds in Escrow",
-      `£${payment.providerAmount.toFixed(2)} is held in escrow for your service`,
-      { paymentId: payment._id, amount: payment.providerAmount }
-    );
-  }
-
-  console.log("✅ Payment processed:", payment._id);
-}
-
-async function handlePaymentIntentFailed(paymentIntent) {
-  console.log("❌ Payment failed:", paymentIntent.id);
-
-  const payment = await Payment.findOne({ paymentIntentId: paymentIntent.id });
-  if (!payment) {
-    console.log("⚠️ Payment record not found for intent:", paymentIntent.id);
-    return;
-  }
-
-  payment.status = "failed";
-  await payment.save();
-
-  await createNotification(
-    payment.customerId,
-    "payment_failed",
-    "❌ Payment Failed",
-    `Your payment of £${payment.amount.toFixed(2)} could not be processed.`,
-    { paymentId: payment._id, error: paymentIntent.last_payment_error?.message }
-  );
-
-  console.log("⚠️ Payment marked as failed:", payment._id);
-}
-
 async function handleChargeRefunded(charge) {
   console.log("🔄 Charge refunded:", charge.id);
 
@@ -493,4 +321,239 @@ async function handleChargeRefunded(charge) {
   );
 
   console.log("✅ Refund processed:", payment._id);
+}
+
+// dkjfkdafd
+
+
+async function handleCheckoutSessionCompleted(session) {
+  console.log('💰 Checkout session completed:', session.id);
+  
+  const metadata = session.metadata || {};
+  const { paymentId, userId, type } = metadata;
+
+  // Only process connection fee payments
+  // if (type !== 'connection_fee') {
+  //   console.log('📦 Not a connection fee payment, skipping...');
+  //   return;
+  // }
+
+  if (!paymentId || !userId) {
+    console.error('❌ Missing paymentId or userId in metadata');
+    return;
+  }
+
+  // Find the payment record
+  let payment = await Payment.findById(paymentId);
+  if (!payment) {
+    console.error('❌ Payment record not found:', paymentId);
+    return;
+  }
+
+  // Check if already processed
+  if (payment.status === 'succeeded') {
+    console.log('✅ Payment already processed:', paymentId);
+    return;
+  }
+
+  // Verify session payment status
+  if (session.payment_status !== 'paid') {
+    console.log('⚠️ Session payment status not paid:', session.payment_status);
+    return;
+  }
+
+  // Update payment
+  payment.status = 'succeeded';
+  payment.stripePaymentIntentId = session.payment_intent;
+  payment.paymentDate = new Date();
+  await payment.save();
+
+  // Create virtual connection record
+  const connection = new ConnectionModel({
+    userId: userId,
+    fullName: metadata.userName || 'User',
+    email: metadata.userEmail || '',
+    phoneNumber: '',
+    location: {
+      type: 'Point',
+      coordinates: [0, 0],
+      address: '',
+      town: '',
+      postcode: '',
+    },
+    purpose: 'payment_only',
+    status: 'completed',
+    fee: {
+      amount: payment.amount,
+      currency: 'GBP',
+      paid: true,
+      paymentId: payment._id,
+      paidAt: new Date(),
+    },
+    userHasPaidConnectionFee: true,
+    userPaymentId: payment._id,
+    userPaymentDate: new Date(),
+    isActive: false,
+    expiresAt: new Date(),
+  });
+  await connection.save();
+
+  // Update user
+  await User.findByIdAndUpdate(userId, {
+    hasPaidConnectionFee: true,
+    connectionFeePaidAt: new Date(),
+    connectionFeePaymentId: payment._id,
+  });
+
+  // Send notification to user
+  await createNotification(
+    userId,
+    'connection_fee_paid',
+    '✅ Connection Fee Paid',
+    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}. You can now create unlimited connections.`,
+    {
+      paymentId: payment._id,
+      connectionId: connection._id,
+      amount: payment.amount,
+    }
+  );
+
+  console.log('✅ Connection fee payment processed:', paymentId);
+}
+
+/**
+ * Handle payment_intent.succeeded for connection fee
+ */
+async function handlePaymentIntentSucceeded(paymentIntent) {
+  console.log('💰 Payment succeeded:', paymentIntent.id);
+
+  const metadata = paymentIntent.metadata || {};
+  const { paymentId, type } = metadata;
+
+  // Only process connection fee payments
+  if (type !== 'connection_fee') {
+    // Skip - this might be a regular booking payment
+    // Your existing booking payment logic will handle it
+    return;
+  }
+
+  if (!paymentId) {
+    console.log('⚠️ No paymentId in metadata for connection fee');
+    return;
+  }
+
+  // Find the payment record
+  let payment = await Payment.findById(paymentId);
+  if (!payment) {
+    console.log('⚠️ Payment record not found for intent:', paymentIntent.id);
+    return;
+  }
+
+  // Check if already processed
+  if (payment.status === 'succeeded') {
+    console.log('✅ Payment already processed:', paymentId);
+    return;
+  }
+
+  // Update payment
+  payment.status = 'succeeded';
+  payment.stripePaymentIntentId = paymentIntent.id;
+  payment.paymentDate = new Date();
+  await payment.save();
+
+  // Create virtual connection record
+  const connection = new Connection({
+    userId: payment.customerId,
+    fullName: metadata.userName || 'User',
+    email: metadata.userEmail || '',
+    phoneNumber: '',
+    location: {
+      type: 'Point',
+      coordinates: [0, 0],
+      address: '',
+      town: '',
+      postcode: '',
+    },
+    purpose: 'payment_only',
+    status: 'completed',
+    fee: {
+      amount: payment.amount,
+      currency: 'GBP',
+      paid: true,
+      paymentId: payment._id,
+      paidAt: new Date(),
+    },
+    userHasPaidConnectionFee: true,
+    userPaymentId: payment._id,
+    userPaymentDate: new Date(),
+    isActive: false,
+    expiresAt: new Date(),
+  });
+  await connection.save();
+
+  // Update user
+  await User.findByIdAndUpdate(payment.customerId, {
+    hasPaidConnectionFee: true,
+    connectionFeePaidAt: new Date(),
+    connectionFeePaymentId: payment._id,
+  });
+
+  // Send notification
+  await createNotification(
+    payment.customerId,
+    'connection_fee_paid',
+    '✅ Connection Fee Paid',
+    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}.`,
+    {
+      paymentId: payment._id,
+      connectionId: connection._id,
+      amount: payment.amount,
+    }
+  );
+
+  console.log('✅ Connection fee payment processed via webhook:', paymentId);
+}
+
+/**
+ * Handle payment_intent.payment_failed for connection fee
+ */
+async function handlePaymentIntentFailed(paymentIntent) {
+  console.log('❌ Payment failed:', paymentIntent.id);
+
+  const metadata = paymentIntent.metadata || {};
+  const { paymentId, type } = metadata;
+
+  // Only process connection fee payments
+  if (type !== 'connection_fee') {
+    return;
+  }
+
+  if (!paymentId) {
+    console.log('⚠️ No paymentId in metadata for connection fee');
+    return;
+  }
+
+  const payment = await Payment.findById(paymentId);
+  if (!payment) {
+    console.log('⚠️ Payment record not found for intent:', paymentIntent.id);
+    return;
+  }
+
+  payment.status = 'failed';
+  payment.failedReason = paymentIntent.last_payment_error?.message || 'Payment failed';
+  await payment.save();
+
+  // Notify user
+  await createNotification(
+    payment.customerId,
+    'payment_failed',
+    '❌ Payment Failed',
+    `Your connection fee payment of £${payment.amount.toFixed(2)} failed. Please try again.`,
+    {
+      paymentId: payment._id,
+      error: payment.failedReason,
+    }
+  );
+
+  console.log('⚠️ Connection fee payment marked as failed:', paymentId);
 }

@@ -220,6 +220,17 @@ const userSchema = new mongoose.Schema(
       subscribedAt: Date,
       subscriptionExpiresAt: Date,
     },
+    hasPaidConnectionFee: {
+      type: Boolean,
+      default: false,
+    },
+    connectionFeePaidAt: {
+      type: Date,
+    },
+    connectionFeePaymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Payment',
+    },
   },
   {
     timestamps: true,

@@ -5,6 +5,15 @@ const User = require('../models/User.model');
 const Wallet = require('../models/Wallet.model');
 const Notification = require('../models/Notification.model');
 const createNotification = require('../utils/create-notification');
+const SettingModel = require('../models/Setting.model');
+const Connection = require("../models/Connection.model")
+
+
+
+const getConnectionFee = async () => {
+  const settings = await SettingModel.getSettings();
+  return settings.pricing?.connectionFee || 1.99;
+};
 
 // Create payment intent
 exports.createPaymentIntent = async (req, res) => {
@@ -121,6 +130,375 @@ exports.createPaymentIntent = async (req, res) => {
 
   } catch (error) {
     console.error('Create payment intent error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.createConnectionFeePaymentIntent = async (req, res) => {
+  try {
+    // Check if user already paid
+    const existingConnection = await Connection.findOne({
+      userId: req.user._id,
+      userHasPaidConnectionFee: true,
+    });
+
+    if (existingConnection) {
+      return res.status(400).json({
+        message: 'You have already paid the connection fee. You can create unlimited connections.',
+        alreadyPaid: true,
+      });
+    }
+
+    // Get settings for fee
+    const settings = await Settings.getSettings();
+    const CONNECTION_FEE = settings.pricing?.connectionFee || 1.99;
+    const PLATFORM_FEE_PERCENTAGE = settings.pricing?.platformFeePercentage || 20;
+
+    // Calculate fees
+    const platformFee = Math.round(CONNECTION_FEE * (PLATFORM_FEE_PERCENTAGE / 100) * 100) / 100;
+    const providerAmount = Math.round(CONNECTION_FEE * (1 - PLATFORM_FEE_PERCENTAGE / 100) * 100) / 100;
+
+    // Check if payment already exists
+    const existingPayment = await Payment.findOne({
+      customerId: req.user._id,
+      type: 'connection_fee',
+      status: { $in: ['pending', 'processing', 'succeeded'] },
+    });
+
+    if (existingPayment) {
+      return res.status(400).json({ 
+        message: 'Payment already in progress. Please check your payment status.',
+        paymentId: existingPayment._id,
+      });
+    }
+
+    // Create payment record
+    const payment = new Payment({
+      customerId: req.user._id,
+      providerId: req.user._id, // Same as customer for connection fee
+      amount: CONNECTION_FEE,
+      platformFee: platformFee,
+      providerAmount: providerAmount,
+      type: 'connection_fee',
+      status: 'pending',
+      isEscrow: false, // Not escrow for connection fee
+      metadata: {
+        purpose: 'connection_fee',
+        description: 'One-time fee for connections feature',
+        userId: req.user._id.toString(),
+        userEmail: req.user.email,
+        userName: req.user.fullName,
+      },
+    });
+
+    await payment.save();
+
+    // Create Stripe payment intent
+    const paymentIntentConfig = {
+      amount: Math.round(CONNECTION_FEE * 100), // Convert to pence
+      currency: 'gbp',
+      metadata: {
+        paymentId: payment._id.toString(),
+        type: 'connection_fee',
+        userId: req.user._id.toString(),
+        userEmail: req.user.email,
+      },
+      receipt_email: req.user.email,
+      payment_method_types: ['card'],
+      description: 'GEOBUY Connection Fee - One-time payment',
+      statement_descriptor: 'GEOBUY Connect Fee',
+      statement_descriptor_suffix: 'Connect Fee',
+    };
+
+    const paymentIntent = await stripe.paymentIntents.create(paymentIntentConfig);
+
+    // Update payment with intent ID
+    payment.paymentIntentId = paymentIntent.id;
+    payment.stripePaymentIntentId = paymentIntent.id;
+    await payment.save();
+
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+      paymentId: payment._id,
+      amount: CONNECTION_FEE,
+      platformFee: platformFee,
+      providerAmount: providerAmount,
+      paymentIntentId: paymentIntent.id,
+    });
+
+  } catch (error) {
+    console.error('❌ Create connection fee payment intent error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.checkConnectionFeeStatus = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    const hasPaid = user?.hasPaidConnectionFee === true;
+
+    if (hasPaid) {
+      return res.json({
+        hasPaid: true,
+        message: 'User has already paid the connection fee',
+        paidAt: user.connectionFeePaidAt,
+      });
+    }
+
+    // Check for pending payment
+    const pendingPayment = await Payment.findOne({
+      customerId: req.user._id,
+      type: 'connection_fee',
+      status: { $in: ['pending', 'processing'] },
+    });
+
+    if (pendingPayment) {
+      return res.json({
+        hasPaid: false,
+        hasPendingPayment: true,
+        paymentId: pendingPayment._id,
+        amount: pendingPayment.amount,
+        status: pendingPayment.status,
+        message: 'Payment is pending. Please complete your payment.',
+      });
+    }
+
+    const settings = await SettingModel.getSettings();
+    const fee = settings.pricing?.connectionFee || 1.99;
+
+    res.json({
+      hasPaid: false,
+      hasPendingPayment: false,
+      message: 'No payment found. Please pay the connection fee.',
+      fee: fee,
+    });
+
+  } catch (error) {
+    console.error('❌ Check connection fee status error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.createConnectionCheckoutSession = async (req, res) => {
+  try {
+    // Check if user already paid
+    const existingConnection = await Connection.findOne({
+      userId: req.user._id,
+      userHasPaidConnectionFee: true,
+    });
+
+    if (existingConnection) {
+      return res.status(400).json({
+        message: 'You have already paid the connection fee. You can create unlimited connections.',
+        alreadyPaid: true,
+      });
+    }
+
+    // Get settings for fee
+    const settings = await SettingModel.getSettings();
+    const CONNECTION_FEE = settings.pricing?.connectionFee || 1.99;
+    const PLATFORM_FEE_PERCENTAGE = settings.pricing?.platformFeePercentage || 20;
+
+    // Calculate fees
+    const platformFee = Math.round(CONNECTION_FEE * (PLATFORM_FEE_PERCENTAGE / 100) * 100) / 100;
+    const providerAmount = Math.round(CONNECTION_FEE * (1 - PLATFORM_FEE_PERCENTAGE / 100) * 100) / 100;
+
+    // Create payment record first
+    const payment = new Payment({
+      customerId: req.user._id,
+      providerId: req.user._id,
+      amount: CONNECTION_FEE,
+      platformFee: platformFee,
+      providerAmount: providerAmount,
+      type: 'connection_fee',
+      status: 'pending',
+      isEscrow: false,
+      metadata: {
+        purpose: 'connection_fee',
+        description: 'One-time fee for connections feature',
+        userId: req.user._id.toString(),
+        userEmail: req.user.email,
+        userName: req.user.fullName,
+      },
+    });
+    await payment.save();
+
+    // Create Stripe Checkout Session
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: 'gbp',
+            product_data: {
+              name: 'GEOBUY Connection Fee',
+              description: 'One-time fee to unlock unlimited connections on GEOBUY',
+              metadata: {
+                type: 'connection_fee',
+              },
+            },
+            unit_amount: Math.round(CONNECTION_FEE * 100),
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      success_url: `${process.env.FRONTEND_URL}/customer/connections?payment=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL}/customer/connect?payment=cancelled`,
+      customer_email: req.user.email,
+      metadata: {
+        paymentId: payment._id.toString(),
+        userId: req.user._id.toString(),
+        type: 'connection_fee',
+        userEmail: req.user.email,
+        userName: req.user.fullName,
+      },
+      payment_intent_data: {
+        metadata: {
+          paymentId: payment._id.toString(),
+          userId: req.user._id.toString(),
+          type: 'connection_fee',
+        },
+      },
+    });
+
+    // Update payment with session ID
+    payment.stripePaymentIntentId = session.payment_intent;
+    payment.metadata.sessionId = session.id;
+    await payment.save();
+
+    // Return the session URL to redirect to Stripe
+    res.json({
+      sessionId: session.id,
+      sessionUrl: session.url,
+      paymentId: payment._id,
+      amount: CONNECTION_FEE,
+    });
+
+  } catch (error) {
+    console.error('❌ Create connection checkout session error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.verifyConnectionPayment = async (req, res) => {
+  try {
+    const { session_id } = req.query;
+
+    if (!session_id) {
+      return res.status(400).json({ message: 'Missing session ID' });
+    }
+
+    // Retrieve the session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(session_id);
+
+    if (session.payment_status !== 'paid') {
+      return res.status(400).json({
+        message: 'Payment not completed',
+        status: session.payment_status,
+      });
+    }
+
+    // Find the payment record
+    const payment = await Payment.findOne({
+      'metadata.sessionId': session_id,
+    });
+
+    if (!payment) {
+      return res.status(404).json({ message: 'Payment record not found' });
+    }
+
+    // Check if already processed
+    if (payment.status === 'succeeded') {
+      return res.json({
+        message: 'Payment already confirmed',
+        alreadyProcessed: true,
+      });
+    }
+
+    // Update payment status
+    payment.status = 'succeeded';
+    payment.stripePaymentIntentId = session.payment_intent;
+    payment.paymentDate = new Date();
+    await payment.save();
+
+    // Create virtual connection record
+    const connection = new Connection({
+      userId: payment.customerId,
+      fullName: req.user?.fullName || payment.metadata?.userName || 'User',
+      email: req.user?.email || payment.metadata?.userEmail || '',
+      phoneNumber: req.user?.phoneNumber || '',
+      location: {
+        type: 'Point',
+        coordinates: [0, 0],
+        address: '',
+        town: '',
+        postcode: '',
+      },
+      purpose: 'payment_only',
+      status: 'completed',
+      fee: {
+        amount: payment.amount,
+        currency: 'GBP',
+        paid: true,
+        paymentId: payment._id,
+        paidAt: new Date(),
+      },
+      userHasPaidConnectionFee: true,
+      userPaymentId: payment._id,
+      userPaymentDate: new Date(),
+      isActive: false,
+      expiresAt: new Date(),
+    });
+    await connection.save();
+
+    // Update user
+    await User.findByIdAndUpdate(payment.customerId, {
+      hasPaidConnectionFee: true,
+      connectionFeePaidAt: new Date(),
+      connectionFeePaymentId: payment._id,
+    });
+
+    // Send notification
+    await createNotification(
+      payment.customerId,
+      'connection_fee_paid',
+      '✅ Connection Fee Paid',
+      `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}. You can now create unlimited connections.`,
+      {
+        paymentId: payment._id,
+        connectionId: connection._id,
+        amount: payment.amount,
+      }
+    );
+
+    // Notify admins
+    const admins = await User.find({ role: 'admin' });
+    for (const admin of admins) {
+      await createNotification(
+        admin._id,
+        'connection_fee_paid',
+        '💰 New Connection Fee Payment',
+        `${req.user?.fullName || 'A user'} has paid the connection fee of £${payment.amount.toFixed(2)}`,
+        {
+          userId: payment.customerId,
+          paymentId: payment._id,
+          amount: payment.amount,
+        }
+      );
+    }
+
+    res.json({
+      message: 'Payment verified successfully',
+      data: {
+        payment,
+        connection,
+        canCreateConnections: true,
+      },
+    });
+
+  } catch (error) {
+    console.error('❌ Verify connection payment error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -310,6 +688,155 @@ exports.confirmPayment = async (req, res) => {
 
   } catch (error) {
     console.error('Confirm payment error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.confirmConnectionFeePayment = async (req, res) => {
+  try {
+    const { paymentId, paymentIntentId } = req.body;
+
+    let payment;
+    
+    if (paymentId) {
+      payment = await Payment.findById(paymentId);
+    } else if (paymentIntentId) {
+      payment = await Payment.findOne({ paymentIntentId });
+    }
+
+    if (!payment) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+
+    if (payment.status === 'succeeded') {
+      return res.status(400).json({ message: 'Payment already confirmed' });
+    }
+
+    if (payment.type !== 'connection_fee') {
+      return res.status(400).json({ message: 'Invalid payment type' });
+    }
+
+    // Check if user already paid
+    const existingConnection = await Connection.findOne({
+      userId: payment.customerId,
+      userHasPaidConnectionFee: true,
+    });
+
+    if (existingConnection) {
+      return res.status(400).json({
+        message: 'User already paid the connection fee',
+        alreadyPaid: true,
+      });
+    }
+
+    // Verify payment with Stripe
+    const paymentIntent = await stripe.paymentIntents.retrieve(payment.paymentIntentId);
+
+    if (paymentIntent.status !== 'succeeded') {
+      return res.status(400).json({ 
+        message: `Payment not successful. Status: ${paymentIntent.status}`,
+        status: paymentIntent.status,
+      });
+    }
+
+    // Update payment status
+    payment.status = 'succeeded';
+    payment.paymentDate = new Date();
+    await payment.save();
+
+    // Create a virtual connection to track payment
+    const connection = new Connection({
+      userId: payment.customerId,
+      fullName: req.user?.fullName || payment.metadata?.userName || 'User',
+      email: req.user?.email || payment.metadata?.userEmail || '',
+      phoneNumber: req.user?.phoneNumber || '',
+      location: {
+        type: 'Point',
+        coordinates: [0, 0],
+        address: '',
+        town: '',
+        postcode: '',
+      },
+      purpose: 'payment_only',
+      status: 'completed',
+      fee: {
+        amount: payment.amount,
+        currency: payment.currency || 'GBP',
+        paid: true,
+        paymentId: payment._id,
+        paidAt: new Date(),
+      },
+      userHasPaidConnectionFee: true,
+      userPaymentId: payment._id,
+      userPaymentDate: new Date(),
+      isActive: false,
+      expiresAt: new Date(),
+    });
+    await connection.save();
+
+    // Update user record
+    await User.findByIdAndUpdate(payment.customerId, {
+      hasPaidConnectionFee: true,
+      connectionFeePaidAt: new Date(),
+      connectionFeePaymentId: payment._id,
+    });
+
+    // Send notification to user
+    await createNotification(
+      payment.customerId,
+      'connection_fee_paid',
+      '✅ Connection Fee Paid',
+      `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}. You can now create unlimited connections.`,
+      {
+        paymentId: payment._id,
+        connectionId: connection._id,
+        amount: payment.amount,
+      }
+    );
+
+    // Send notification to admins
+    const admins = await User.find({ role: 'admin' });
+    for (const admin of admins) {
+      await createNotification(
+        admin._id,
+        'connection_fee_paid',
+        '💰 New Connection Fee Payment',
+        `${req.user?.fullName || 'A user'} has paid the connection fee of £${payment.amount.toFixed(2)}`,
+        {
+          userId: payment.customerId,
+          paymentId: payment._id,
+          amount: payment.amount,
+        }
+      );
+    }
+
+    // Emit socket events
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user_${payment.customerId}`).emit('connection-fee-paid', {
+        paymentId: payment._id,
+        amount: payment.amount,
+        timestamp: new Date(),
+      });
+      io.to('admin_room').emit('connection-fee-paid', {
+        userId: payment.customerId,
+        paymentId: payment._id,
+        amount: payment.amount,
+        timestamp: new Date(),
+      });
+    }
+
+    res.json({
+      message: 'Connection fee payment confirmed successfully',
+      data: {
+        payment,
+        connection,
+        canCreateConnections: true,
+      },
+    });
+
+  } catch (error) {
+    console.error('❌ Confirm connection fee payment error:', error);
     res.status(500).json({ message: error.message });
   }
 };

@@ -9,6 +9,11 @@ const settingsSchema = new mongoose.Schema(
         default: 3.99,
         min: 0,
       },
+      connectionFee: {
+        type: Number,
+        default: 1.99,
+        min: 0,
+      },
       subscriptionDiscount: {
         type: Number,
         default: 20,

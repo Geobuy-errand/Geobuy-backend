@@ -10,27 +10,7 @@ const { Server } = require('socket.io');
 
 const webhookController = require('./controllers/webhook.controller');
 
-const authRoutes = require('./routes/auth.route');
-const userRoutes = require('./routes/user.route');
-const bookingRoutes = require('./routes/booking.route');
-const paymentRoutes = require('./routes/payment.route');
-const messageRoutes = require('./routes/message.route');
-const notificationRoutes = require('./routes/notification.route');
-const reviewRoutes = require('./routes/review.route');
-const serviceRoutes = require('./routes/service.route');
-const walletRoutes = require('./routes/wallet.route');
-const adminRoutes = require('./routes/admin.route');
-const uploadRoutes = require('./routes/upload.route');
-const errandRoutes = require('./routes/errand.route');
-const verificationRoutes = require('./routes/verification.route');
-const commissionRoutes = require('./routes/commission.route');
-const qrRoutes = require('./routes/qrCode.route');
-const chatRoutes = require('./routes/chat.route');
-const chatbotRoutes = require('./routes/chatbot.route');
-const subscriptionRoutes = require('./routes/subscription.route');
-const subscriptionPlanRoutes = require('./routes/subscription.plan.route');
-const settingsRoutes = require('./routes/setting.route');
-const seedRoutes = require('./routes/seed.route');
+const routes = require('./routes');
 
 
 const seedDatabase = require('./seed');
@@ -99,27 +79,7 @@ app.get('/', (req, res)=>{
 app.use('/api', limiter);
 
 // Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/bookings', bookingRoutes);
-app.use('/api/payments', paymentRoutes);
-app.use('/api/messages', messageRoutes);
-app.use('/api/notifications', notificationRoutes);
-app.use('/api/reviews', reviewRoutes);
-app.use('/api/wallet', walletRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/upload', uploadRoutes);
-app.use('/api/errands', errandRoutes);
-app.use('/api/services', serviceRoutes);
-app.use('/api/verifications', verificationRoutes);
-app.use('/api/commissions', commissionRoutes);
-app.use('/api/qr', qrRoutes);
-app.use('/api/subscription', subscriptionRoutes);
-app.use('/api/chats', chatRoutes);
-app.use('/api/chatbot', chatbotRoutes);
-app.use('/api/subscription-plans', subscriptionPlanRoutes);
-app.use('/api/settings', settingsRoutes);
-app.use('/api/seed', seedRoutes);
+app.use('/api', routes);
 
 
 

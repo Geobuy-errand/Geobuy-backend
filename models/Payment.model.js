@@ -13,7 +13,7 @@ const paymentSchema = new mongoose.Schema(
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      required: false,
     },
     stripePaymentIntentId: {
       type: String,
@@ -22,7 +22,7 @@ const paymentSchema = new mongoose.Schema(
     providerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+      required: false,
     },
     amount: {
       type: Number,
@@ -30,11 +30,11 @@ const paymentSchema = new mongoose.Schema(
     },
     platformFee: {
       type: Number,
-      required: true,
+      required: false,
     },
     providerAmount: {
       type: Number,
-      required: true,
+      required: false,
     },
     currency: {
       type: String,
@@ -47,7 +47,7 @@ const paymentSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'processing', 'succeeded', 'released', 'refunded', 'failed'],
+      enum: ['pending', 'processing', 'succeeded', 'completed', 'failed', 'refunded', 'cancelled', 'paid'],
       default: 'pending',
     },
     isEscrow: {
