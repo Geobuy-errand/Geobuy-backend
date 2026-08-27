@@ -627,3 +627,22 @@ exports.adminUpdateConnection = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+exports.getConnectionStatus = async (req, res) => {
+  try {
+    const connection = await Connection.findOne({
+      userId: req.user._id,
+      userHasPaidConnectionFee: true,
+    });
+
+    res.json({
+      hasConnected: !!connection,
+      connection: connection || null,
+      state: connection?.state || null,
+    });
+
+  } catch (error) {
+    console.error('❌ Get connection status error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};

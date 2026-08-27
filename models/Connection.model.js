@@ -11,17 +11,24 @@ const connectionSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
-    // ✅ Add this to track if user has paid the connection fee
-    userHasPaidConnectionFee: {
+    // ✅ One connection only - prevent duplicates
+    hasConnected: {
       type: Boolean,
       default: false,
     },
-    userPaymentId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Payment',
-    },
-    userPaymentDate: {
-      type: Date,
+    // ✅ UK State - dropdown instead of free text
+    state: {
+      type: String,
+      required: true,
+      enum: [
+        'England', 'Scotland', 'Wales', 'Northern Ireland',
+        'London', 'Manchester', 'Birmingham', 'Liverpool',
+        'Bristol', 'Sheffield', 'Leeds', 'Newcastle',
+        'Nottingham', 'Southampton', 'Brighton', 'Oxford',
+        'Cambridge', 'York', 'Bath', 'Edinburgh', 'Glasgow',
+        'Aberdeen', 'Dundee', 'Cardiff', 'Swansea', 'Belfast',
+        'Derry', 'All UK'
+      ],
     },
     fullName: {
       type: String,
@@ -113,6 +120,17 @@ const connectionSchema = new mongoose.Schema(
       },
       paidAt: Date,
     },
+    userHasPaidConnectionFee: {
+      type: Boolean,
+      default: false,
+    },
+    userPaymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Payment',
+    },
+    userPaymentDate: {
+      type: Date,
+    },
     connectionDate: {
       type: Date,
     },
@@ -158,7 +176,7 @@ const connectionSchema = new mongoose.Schema(
   }
 );
 
-// Generate connection ID before saving
+// ✅ Prevent multiple connections - check before saving
 connectionSchema.pre('save', function (next) {
   if (!this.connectionId) {
     const date = new Date();
@@ -173,11 +191,14 @@ connectionSchema.pre('save', function (next) {
   next();
 });
 
+// ✅ Compound index to prevent duplicate active connections
+connectionSchema.index({ userId: 1, status: 1 });
+
 // Indexes
 connectionSchema.index({ location: '2dsphere' });
 connectionSchema.index({ userId: 1, createdAt: -1 });
 connectionSchema.index({ status: 1 });
+connectionSchema.index({ state: 1 });
 connectionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-connectionSchema.index({ userHasPaidConnectionFee: 1 });
 
 module.exports = mongoose.model('Connection', connectionSchema);

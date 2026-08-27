@@ -24,6 +24,7 @@ const subscriptionPlanRoutes = require('./subscription.plan.route');
 const settingsRoutes = require('./setting.route');
 const seedRoutes = require('./seed.route');
 const connectionRoutes = require('./connection.route');
+const connectPostRoutes = require('./connect.post.route');
 
 // Routes
 router.use('/auth', authRoutes);
@@ -47,6 +48,7 @@ router.use('/subscription', subscriptionRoutes);
 router.use('/subscription-plans', subscriptionPlanRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/connections', connectionRoutes);
+router.use('/api/connect-posts', connectPostRoutes);
 router.use('/seed', seedRoutes);
 
 module.exports = router;

@@ -3,6 +3,7 @@ const User = require('../models/User.model');
 const ProviderProfile = require('../models/ProviderProfile.model');
 const Wallet = require('../models/Wallet.model');
 const ErrandRunnerProfileModel = require('../models/ErrandRunnerProfile.model');
+const sendEmail = require('../services/email.service');
 
 // Register Customer
 exports.registerCustomer = async (req, res) => {
@@ -55,6 +56,16 @@ exports.registerCustomer = async (req, res) => {
       secure: process.env.NODE_ENV === "production",
       sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    await sendEmail({
+      to: email,
+      subject: "Registration Successful",
+      html: `
+        <h2>Hello!</h2>
+        <p>Your errand has been updated.</p>
+      `,
+      from: "support",
     });
 
     res.status(201).json({
