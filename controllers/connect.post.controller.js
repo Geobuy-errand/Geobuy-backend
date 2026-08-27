@@ -1,6 +1,7 @@
 const ConectionPost = require('../models/ConnectPost.model');
 const Connection = require('../models/Connection.model');
 const createNotification = require('../utils/create-notification');
+const { sendTemplateEmail, connectionTemplates } = require('../utils/email-templates');
 
 // ============================================================
 // GET USER POSTS (Based on their state)
@@ -103,6 +104,34 @@ exports.createPost = async (req, res) => {
           state: state,
           type: type,
         }
+      );
+
+      await sendTemplateEmail(
+        conn.userId.email,
+        connectionTemplates.newPostInState(
+          conn.userId.fullName,
+          post.title,
+          post.type || 'update',
+          state
+        ).subject,
+        connectionTemplates.newPostInState(
+          conn.userId.fullName,
+          post.title,
+          post.type || 'update',
+          state
+        ).title,
+        connectionTemplates.newPostInState(
+          conn.userId.fullName,
+          post.title,
+          post.type || 'update',
+          state
+        ).content,
+        connectionTemplates.newPostInState(
+          conn.userId.fullName,
+          post.title,
+          post.type || 'update',
+          state
+        ).button
       );
     }
 

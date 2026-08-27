@@ -1,9 +1,9 @@
-const jwt = require('jsonwebtoken');
-const User = require('../models/User.model');
-const ProviderProfile = require('../models/ProviderProfile.model');
-const Wallet = require('../models/Wallet.model');
-const ErrandRunnerProfileModel = require('../models/ErrandRunnerProfile.model');
-const sendEmail = require('../services/email.service');
+const jwt = require("jsonwebtoken");
+const User = require("../models/User.model");
+const ProviderProfile = require("../models/ProviderProfile.model");
+const Wallet = require("../models/Wallet.model");
+const ErrandRunnerProfileModel = require("../models/ErrandRunnerProfile.model");
+const { sendTemplateEmail, authTemplates } = require("../utils/email-templates");
 
 // Register Customer
 exports.registerCustomer = async (req, res) => {
@@ -24,7 +24,7 @@ exports.registerCustomer = async (req, res) => {
     // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ message: 'Email already registered' });
+      return res.status(400).json({ message: "Email already registered" });
     }
 
     const user = new User({
@@ -38,7 +38,7 @@ exports.registerCustomer = async (req, res) => {
       over18,
       acceptedTerms,
       acceptedPrivacy,
-      role: 'customer',
+      role: "customer",
       isVerified: true,
     });
 
@@ -48,7 +48,7 @@ exports.registerCustomer = async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || '7d' }
+      { expiresIn: process.env.JWT_EXPIRE || "7d" }
     );
 
     res.cookie("token", token, {
@@ -58,18 +58,16 @@ exports.registerCustomer = async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    await sendEmail({
-      to: email,
-      subject: "Registration Successful",
-      html: `
-        <h2>Hello!</h2>
-        <p>Your errand has been updated.</p>
-      `,
-      from: "support",
-    });
+    await sendTemplateEmail(
+      email,
+      authTemplates.welcomeCustomer(fullName, email).subject,
+      authTemplates.welcomeCustomer(fullName, email).title,
+      authTemplates.welcomeCustomer(fullName, email).content,
+      authTemplates.welcomeCustomer(fullName, email).button
+    );
 
     res.status(201).json({
-      message: 'Customer registered successfully',
+      message: "Customer registered successfully",
       user: {
         id: user._id,
         fullName: user.fullName,
@@ -101,25 +99,31 @@ exports.registerProvider = async (req, res) => {
       informationTrue,
     } = req.body;
 
-    console.log('📝 Registering provider:', email);
+    console.log("📝 Registering provider:", email);
 
     // Check if user exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ message: 'User already exists' });
+      return res.status(400).json({ message: "User already exists" });
     }
 
     // Validate required fields
     if (!fullName || !email || !phoneNumber || !password) {
-      return res.status(400).json({ message: 'Please fill in all required fields' });
+      return res
+        .status(400)
+        .json({ message: "Please fill in all required fields" });
     }
 
     if (!over18) {
-      return res.status(400).json({ message: 'You must be over 18 to register' });
+      return res
+        .status(400)
+        .json({ message: "You must be over 18 to register" });
     }
 
     if (!acceptedTerms || !acceptedPrivacy || !informationTrue) {
-      return res.status(400).json({ message: 'Please accept all terms and conditions' });
+      return res
+        .status(400)
+        .json({ message: "Please accept all terms and conditions" });
     }
 
     // Create user
@@ -128,7 +132,7 @@ exports.registerProvider = async (req, res) => {
       email,
       phoneNumber,
       password,
-      role: 'provider',
+      role: "provider",
       dateOfBirth: new Date(dateOfBirth),
       address: {
         street: address.street,
@@ -145,13 +149,13 @@ exports.registerProvider = async (req, res) => {
       acceptedTerms,
       acceptedPrivacy,
       informationTrue,
-      verificationStatus: 'pending',
+      verificationStatus: "pending",
       isActive: true,
       isVerified: false,
       // Initialize with empty serviceCategories - they can add later in profile
       serviceCategories: [],
       location: {
-        type: 'Point',
+        type: "Point",
         coordinates: [0, 0], // Will be updated with geocoding
       },
     });
@@ -162,9 +166,9 @@ exports.registerProvider = async (req, res) => {
     const providerProfile = new ProviderProfile({
       userId: user._id,
       serviceCategories: [],
-      verificationStatus: 'pending',
+      verificationStatus: "pending",
       isVerified: false,
-      about: '',
+      about: "",
       completedJobs: 0,
       totalEarnings: 0,
       completionRate: 0,
@@ -173,7 +177,6 @@ exports.registerProvider = async (req, res) => {
     await providerProfile.save();
 
     // Create wallet
-    const Wallet = require('../models/Wallet.model');
     const wallet = new Wallet({
       userId: user._id,
       balance: 0,
@@ -183,18 +186,30 @@ exports.registerProvider = async (req, res) => {
     await wallet.save();
 
     // Generate JWT
-    const jwt = require('jsonwebtoken');
     const token = jwt.sign(
       { id: user._id, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || '7d' }
+      { expiresIn: process.env.JWT_EXPIRE || "7d" }
     );
 
-    console.log('✅ Provider registered successfully:', email);
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    await sendTemplateEmail(
+      email,
+      authTemplates.welcomeProvider(fullName, email).subject,
+      authTemplates.welcomeProvider(fullName, email).title,
+      authTemplates.welcomeProvider(fullName, email).content,
+      authTemplates.welcomeProvider(fullName, email).button
+    );
 
     res.status(201).json({
-      message: 'Provider registered successfully',
-      token,
+      message: "Provider registered successfully",
+      // token,
       user: {
         id: user._id,
         fullName: user.fullName,
@@ -208,7 +223,7 @@ exports.registerProvider = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('❌ Register provider error:', error);
+    console.error("❌ Register provider error:", error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -243,7 +258,7 @@ exports.registerErrandRunner = async (req, res) => {
     // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ message: 'Email already registered' });
+      return res.status(400).json({ message: "Email already registered" });
     }
 
     const user = new User({
@@ -258,8 +273,8 @@ exports.registerErrandRunner = async (req, res) => {
       over18,
       acceptedTerms,
       acceptedPrivacy,
-      role: 'errand_runner',
-      verificationStatus: 'pending',
+      role: "errand_runner",
+      verificationStatus: "pending",
     });
 
     await user.save();
@@ -271,7 +286,7 @@ exports.registerErrandRunner = async (req, res) => {
       phoneNumber,
       address,
       bankDetails,
-      vehicleType: vehicleType || 'walking',
+      vehicleType: vehicleType || "walking",
       vehicleRegistration,
       vehicleInsurance,
       drivingLicence,
@@ -287,11 +302,11 @@ exports.registerErrandRunner = async (req, res) => {
         saturday: false,
         sunday: false,
       },
-      availableHours: availableHours || { start: '08:00', end: '18:00' },
-      verificationStatus: 'pending',
+      availableHours: availableHours || { start: "08:00", end: "18:00" },
+      verificationStatus: "pending",
       verificationSubmittedAt: new Date(),
       location: {
-        type: 'Point',
+        type: "Point",
         coordinates: [0, 0],
       },
     });
@@ -309,7 +324,7 @@ exports.registerErrandRunner = async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || '7d' }
+      { expiresIn: process.env.JWT_EXPIRE || "7d" }
     );
 
     res.cookie("token", token, {
@@ -319,8 +334,28 @@ exports.registerErrandRunner = async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
+    await sendTemplateEmail(
+      email,
+      authTemplates.welcomeErrandRunner(
+        fullName,
+        email
+      ).subject,
+      authTemplates.welcomeErrandRunner(
+        fullName,
+        email
+      ).title,
+      authTemplates.welcomeErrandRunner(
+        fullName,
+        email
+      ).content,
+      authTemplates.welcomeErrandRunner(
+        fullName,
+        email
+      ).button
+    );
+
     res.status(201).json({
-      message: 'Errand runner registered successfully. Awaiting verification.',
+      message: "Errand runner registered successfully. Awaiting verification.",
       user: {
         id: user._id,
         fullName: user.fullName,
@@ -340,24 +375,27 @@ exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email, role: {$ne: 'admin'} }).select('+password');
+    const user = await User.findOne({ email, role: { $ne: "admin" } }).select(
+      "+password"
+    );
     if (!user) {
-      return res.status(401).json({ message: 'User does not exists' });
+      return res.status(401).json({ message: "User does not exists" });
     }
 
     if (!user.isActive) {
-      return res.status(403).json({ message: 'Account is deactivated' });
+      return res.status(403).json({ message: "Account is deactivated" });
     }
 
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ message: "Invalid credentials" });
     }
 
     // Check if provider is verified
-    if (user.role === 'provider' && user.verificationStatus !== 'approved') {
+    if (user.role === "provider" && user.verificationStatus !== "approved") {
       return res.status(403).json({
-        message: 'Your account is not verified yet. Please wait for admin approval.',
+        message:
+          "Your account is not verified yet. Please wait for admin approval.",
         verificationStatus: user.verificationStatus,
       });
     }
@@ -366,7 +404,7 @@ exports.login = async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || '7d' }
+      { expiresIn: process.env.JWT_EXPIRE || "7d" }
     );
 
     res.cookie("token", token, {
@@ -377,7 +415,7 @@ exports.login = async (req, res) => {
     });
 
     res.json({
-      message: 'Login successful',
+      message: "Login successful",
       user: {
         id: user._id,
         fullName: user.fullName,
@@ -394,21 +432,21 @@ exports.login = async (req, res) => {
 
 // Logout
 exports.logout = (req, res) => {
-  res.clearCookie('token', {
+  res.clearCookie("token", {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.NODE_ENV === "production",
     sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
   });
-  res.json({ message: 'Logged out successfully' });
+  res.json({ message: "Logged out successfully" });
 };
 
 // Get current user
 exports.getCurrentUser = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('-password');
-    
+    const user = await User.findById(req.user._id).select("-password");
+
     let providerProfile = null;
-    if (user.role === 'provider') {
+    if (user.role === "provider") {
       providerProfile = await ProviderProfile.findOne({ userId: user._id });
     }
 

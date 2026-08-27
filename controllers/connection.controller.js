@@ -3,6 +3,8 @@ const User = require('../models/User.model');
 const Payment = require('../models/Payment.model');
 const Settings = require('../models/Setting.model');
 const createNotification = require('../utils/create-notification')
+const { sendTemplateEmail, connectionTemplates } = require('../utils/email-templates');
+
 
 // ============================================================
 // CHECK IF USER HAS PAID CONNECTION FEE
@@ -126,6 +128,30 @@ exports.payConnectionFee = async (req, res) => {
           paymentId: payment._id,
           amount: CONNECTION_FEE,
         }
+      );
+
+      await sendTemplateEmail(
+        req.user.email,
+        connectionTemplates.connectionFeePaid(
+          req.user.fullName,
+          CONNECTION_FEE,
+          connection.connectionId
+        ).subject,
+        connectionTemplates.connectionFeePaid(
+          req.user.fullName,
+          CONNECTION_FEE,
+          connection.connectionId
+        ).title,
+        connectionTemplates.connectionFeePaid(
+          req.user.fullName,
+          CONNECTION_FEE,
+          connection.connectionId
+        ).content,
+        connectionTemplates.connectionFeePaid(
+          req.user.fullName,
+          CONNECTION_FEE,
+          connection.connectionId
+        ).button
       );
   
       res.json({
@@ -283,6 +309,30 @@ exports.createConnection = async (req, res) => {
           }
         );
       }
+
+      await sendTemplateEmail(
+        req.user.email,
+        connectionTemplates.connectionCreated(
+          req.user.fullName,
+          connection.connectionId,
+          connection.state || 'Your State'
+        ).subject,
+        connectionTemplates.connectionCreated(
+          req.user.fullName,
+          connection.connectionId,
+          connection.state || 'Your State'
+        ).title,
+        connectionTemplates.connectionCreated(
+          req.user.fullName,
+          connection.connectionId,
+          connection.state || 'Your State'
+        ).content,
+        connectionTemplates.connectionCreated(
+          req.user.fullName,
+          connection.connectionId,
+          connection.state || 'Your State'
+        ).button
+      );
   
       res.status(201).json({
         message: 'Connection created successfully',

@@ -740,3 +740,5 @@ exports.getErrandsByStatus = async (req, res) => {
   }
 };
 
+
+exports.getPricingSettings = getPricingSettings

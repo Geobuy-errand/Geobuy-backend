@@ -7,6 +7,8 @@ const Notification = require('../models/Notification.model');
 const createNotification = require('../utils/create-notification');
 const SettingModel = require('../models/Setting.model');
 const Connection = require("../models/Connection.model")
+const { sendTemplateEmail, paymentTemplates } = require('../utils/email-templates');
+
 
 
 
@@ -579,6 +581,7 @@ exports.releaseFunds = async (req, res) => {
 exports.confirmPayment = async (req, res) => {
   try {
     const { paymentId } = req.body;
+    const user = req.user
 
     const payment = await Payment.findById(paymentId);
     if (!payment) {
@@ -680,6 +683,36 @@ exports.confirmPayment = async (req, res) => {
         timestamp: new Date(),
       });
     }
+
+    await sendTemplateEmail(
+      user.email,
+      paymentTemplates.paymentSuccessful(
+        user.fullName,
+        payment.amount,
+        payment.metadata?.serviceType || 'Service',
+        payment.paymentIntentId
+      ).subject,
+      paymentTemplates.paymentSuccessful(
+        user.fullName,
+        payment.amount,
+        payment.metadata?.serviceType || 'Service',
+        payment.paymentIntentId
+      ).title,
+      paymentTemplates.paymentSuccessful(
+        user.fullName,
+        payment.amount,
+        payment.metadata?.serviceType || 'Service',
+        payment.paymentIntentId
+      ).content,
+      paymentTemplates.paymentSuccessful(
+        user.fullName,
+        payment.amount,
+        payment.metadata?.serviceType || 'Service',
+        payment.paymentIntentId
+      ).button
+    );
+
+    
 
     res.json({
       message: 'Payment confirmed successfully',

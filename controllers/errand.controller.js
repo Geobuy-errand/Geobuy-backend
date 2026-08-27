@@ -1,15 +1,14 @@
 const Errand = require('../models/Errand.model');
 const User = require('../models/User.model');
 const Notification = require('../models/Notification.model');
-const DistanceService = require('../services/distanceService');
 const OSRMService = require('../services/osrmService');
 const NominatimService = require('../services/nominatimService');
 const createNotification = require('../utils/create-notification');
 const ChatModel = require('../models/Chat.model');
+const Settings = require('../models/Setting.model');
+const { sendTemplateEmail, errandTemplates } = require('../utils/email-templates');
+const { getPricingSettings } = require('./booking.controller');
 
-
-const BASE_FEE = 3.99;
-const SUBSCRIPTION_DISCOUNT = 20; // 20%
 
 // Get all errands for user
 exports.createErrand = async (req, res) => {
@@ -30,6 +29,12 @@ exports.createErrand = async (req, res) => {
       minPrice,
       maxPrice,
     } = req.body;
+
+    const pricingSettings = await getPricingSettings();
+    const { 
+      BASE_FEE, 
+      SUBSCRIPTION_DISCOUNT,
+    } = pricingSettings;
 
     // ============================================================
     // STEP 1: Validate UK Addresses
@@ -100,7 +105,7 @@ exports.createErrand = async (req, res) => {
     else ratePerMile = 0.50;
 
     const distanceFee = distanceInMiles * ratePerMile;
-    let subtotal = BASE_FEE + distanceFee;
+    let subtotal = (await getPricingSettings()).BASE_FEE + distanceFee;
     
     // Additional charges
     if (isHeavyItem) subtotal += 2.99;
@@ -347,6 +352,38 @@ exports.createErrand = async (req, res) => {
     // ============================================================
     // STEP 7: Response
     // ============================================================
+
+    await sendTemplateEmail(
+      req.user.email,
+      errandTemplates.errandCreated(
+        req.user.fullName,
+        errand.errandId,
+        errand.serviceType,
+        errand.preferredDate || 'To be scheduled',
+        errand.total
+      ).subject,
+      errandTemplates.errandCreated(
+        req.user.fullName,
+        errand.errandId,
+        errand.serviceType,
+        errand.preferredDate || 'To be scheduled',
+        errand.total
+      ).title,
+      errandTemplates.errandCreated(
+        req.user.fullName,
+        errand.errandId,
+        errand.serviceType,
+        errand.preferredDate || 'To be scheduled',
+        errand.total
+      ).content,
+      errandTemplates.errandCreated(
+        req.user.fullName,
+        errand.errandId,
+        errand.serviceType,
+        errand.preferredDate || 'To be scheduled',
+        errand.total
+      ).button
+    );
     
     res.status(201).json({
       message: 'Errand created successfully. Waiting for offers.',
@@ -741,6 +778,64 @@ exports.acceptErrand = async (req, res) => {
       providerName: req.user.fullName,
     });
 
+    // Notify customer
+    await sendTemplateEmail(
+      customerEmail,
+      errandTemplates.errandAccepted(
+        customerName,
+        errand.errandId,
+        req.user.fullName,
+        errand.preferredDate || 'To be scheduled'
+      ).subject,
+      errandTemplates.errandAccepted(
+        customerName,
+        errand.errandId,
+        req.user.fullName,
+        errand.preferredDate || 'To be scheduled'
+      ).title,
+      errandTemplates.errandAccepted(
+        customerName,
+        errand.errandId,
+        req.user.fullName,
+        errand.preferredDate || 'To be scheduled'
+      ).content,
+      errandTemplates.errandAccepted(
+        customerName,
+        errand.errandId,
+        req.user.fullName,
+        errand.preferredDate || 'To be scheduled'
+      ).button
+    );
+    
+    // Notify provider (the one who accepted)
+    await sendTemplateEmail(
+      req.user.email,
+      errandTemplates.youAcceptedErrand(
+        req.user.fullName,
+        errand.errandId,
+        errand.serviceType,
+        errand.pickup?.address || 'Pickup location'
+      ).subject,
+      errandTemplates.youAcceptedErrand(
+        req.user.fullName,
+        errand.errandId,
+        errand.serviceType,
+        errand.pickup?.address || 'Pickup location'
+      ).title,
+      errandTemplates.youAcceptedErrand(
+        req.user.fullName,
+        errand.errandId,
+        errand.serviceType,
+        errand.pickup?.address || 'Pickup location'
+      ).content,
+      errandTemplates.youAcceptedErrand(
+        req.user.fullName,
+        errand.errandId,
+        errand.serviceType,
+        errand.pickup?.address || 'Pickup location'
+      ).button
+    );
+
     res.json({
       message: 'Errand accepted successfully',
       errand,
@@ -897,6 +992,93 @@ exports.updateErrandStatus = async (req, res) => {
         });
       }
     }
+
+
+    // In updateErrandStatus - when status is 'completed'
+if (status === 'completed') {
+  // Notify customer
+  await sendTemplateEmail(
+    errand.customerId.email,
+    errandTemplates.errandCompleted(
+      errand.customerId.fullName,
+      errand.errandId,
+      errand.providerId?.fullName || 'Provider'
+    ).subject,
+    errandTemplates.errandCompleted(
+      errand.customerId.fullName,
+      errand.errandId,
+      errand.providerId?.fullName || 'Provider'
+    ).title,
+    errandTemplates.errandCompleted(
+      errand.customerId.fullName,
+      errand.errandId,
+      errand.providerId?.fullName || 'Provider'
+    ).content,
+    errandTemplates.errandCompleted(
+      errand.customerId.fullName,
+      errand.errandId,
+      errand.providerId?.fullName || 'Provider'
+    ).button
+  );
+
+  // Notify provider
+  if (errand.providerId?.email) {
+    await sendTemplateEmail(
+      errand.providerId.email,
+      errandTemplates.errandCompletedProvider(
+        errand.providerId.fullName,
+        errand.errandId,
+        errand.customerId.fullName
+      ).subject,
+      errandTemplates.errandCompletedProvider(
+        errand.providerId.fullName,
+        errand.errandId,
+        errand.customerId.fullName
+      ).title,
+      errandTemplates.errandCompletedProvider(
+        errand.providerId.fullName,
+        errand.errandId,
+        errand.customerId.fullName
+      ).content,
+      errandTemplates.errandCompletedProvider(
+        errand.providerId.fullName,
+        errand.errandId,
+        errand.customerId.fullName
+      ).button
+    );
+  }
+}
+
+// In updateErrandStatus - when status is 'cancelled'
+if (status === 'cancelled') {
+  const recipientId = isCustomer ? errand.providerId?._id : errand.customerId._id;
+  if (recipientId) {
+    const recipient = await User.findById(recipientId);
+    await sendTemplateEmail(
+      recipient.email,
+      errandTemplates.errandCancelled(
+        recipient.fullName,
+        errand.errandId,
+        req.body.reason || 'No reason provided'
+      ).subject,
+      errandTemplates.errandCancelled(
+        recipient.fullName,
+        errand.errandId,
+        req.body.reason || 'No reason provided'
+      ).title,
+      errandTemplates.errandCancelled(
+        recipient.fullName,
+        errand.errandId,
+        req.body.reason || 'No reason provided'
+      ).content,
+      errandTemplates.errandCancelled(
+        recipient.fullName,
+        errand.errandId,
+        req.body.reason || 'No reason provided'
+      ).button
+    );
+  }
+}
 
     res.json({
       message: `Errand ${status} successfully`,

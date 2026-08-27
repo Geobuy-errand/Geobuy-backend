@@ -6,6 +6,8 @@ const Errand = require("../models/Errand.model");
 const User = require("../models/User.model");
 const createNotification = require("../utils/create-notification");
 const ConnectionModel = require("../models/Connection.model");
+const { sendTemplateEmail, subscriptionTemplates } = require('../utils/email-templates');
+
 
 /**
  * Unified Stripe Webhook Handler
@@ -331,6 +333,7 @@ async function handleCheckoutSessionCompleted(session) {
   
   const metadata = session.metadata || {};
   const { paymentId, userId, type } = metadata;
+  const user = await User.findById(userId)
 
   // Only process connection fee payments
   // if (type !== 'connection_fee') {

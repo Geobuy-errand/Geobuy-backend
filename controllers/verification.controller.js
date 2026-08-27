@@ -1,5 +1,6 @@
 const Verification = require('../models/Verification.model');
 const User = require('../models/User.model');
+const { sendTemplateEmail, providerTemplates } = require('../utils/email-templates');
 
 // Submit verification document
 exports.submitVerification = async (req, res) => {
@@ -120,6 +121,7 @@ exports.reviewVerification = async (req, res) => {
   try {
     const { status, rejectionReason, notes } = req.body;
     const verification = await Verification.findById(req.params.id);
+    const user = req.user
 
     if (!verification) {
       return res.status(404).json({ message: 'Verification not found' });
@@ -155,6 +157,48 @@ exports.reviewVerification = async (req, res) => {
         }
       }
     }
+
+    // In reviewVerification - when status is 'approved'
+if (status === 'approved') {
+  await sendTemplateEmail(
+    user.email,
+    providerTemplates.verificationApproved(
+      user.fullName
+    ).subject,
+    providerTemplates.verificationApproved(
+      user.fullName
+    ).title,
+    providerTemplates.verificationApproved(
+      user.fullName
+    ).content,
+    providerTemplates.verificationApproved(
+      user.fullName
+    ).button
+  );
+}
+
+// In reviewVerification - when status is 'rejected'
+if (status === 'rejected') {
+  await sendTemplateEmail(
+    user.email,
+    providerTemplates.verificationRejected(
+      user.fullName,
+      rejectionReason || 'Document verification failed'
+    ).subject,
+    providerTemplates.verificationRejected(
+      user.fullName,
+      rejectionReason || 'Document verification failed'
+    ).title,
+    providerTemplates.verificationRejected(
+      user.fullName,
+      rejectionReason || 'Document verification failed'
+    ).content,
+    providerTemplates.verificationRejected(
+      user.fullName,
+      rejectionReason || 'Document verification failed'
+    ).button
+  );
+}
 
     res.json({
       message: 'Verification reviewed',
