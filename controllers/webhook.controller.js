@@ -434,6 +434,8 @@ async function handleCheckoutSessionCompleted(session) {
     userId: userId,
   });
 
+  console.log('handleCheckoutSessionCompleted-connection', connection)
+
 
   // Send notification to user
   await createNotification(
