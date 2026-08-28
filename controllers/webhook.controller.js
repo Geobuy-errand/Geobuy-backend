@@ -5,7 +5,7 @@ const Transaction = require("../models/Transaction.model");
 const Errand = require("../models/Errand.model");
 const User = require("../models/User.model");
 const createNotification = require("../utils/create-notification");
-
+const ConnectionModel = require("../models/Connection.model");
 
 /**
  * Unified Stripe Webhook Handler
@@ -14,68 +14,68 @@ const createNotification = require("../utils/create-notification");
 
 exports.handleWebhook = async (req, res) => {
   try {
-    const sig = req.headers['stripe-signature'];
+    const sig = req.headers["stripe-signature"];
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
     if (!webhookSecret) {
-      console.error('STRIPE_WEBHOOK_SECRET is not set');
-      return res.status(500).json({ error: 'Webhook secret not configured' });
+      console.error("STRIPE_WEBHOOK_SECRET is not set");
+      return res.status(500).json({ error: "Webhook secret not configured" });
     }
 
     let event;
     try {
       event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
     } catch (err) {
-      console.error('Webhook signature verification failed:', err.message);
+      console.error("Webhook signature verification failed:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    console.log('📦 Received Stripe webhook:', event.type);
-    console.log('📦 Event ID:', event.id);
+    console.log("📦 Received Stripe webhook:", event.type);
+    console.log("📦 Event ID:", event.id);
 
     // Handle different event types
     switch (event.type) {
-      case 'checkout.session.completed': {
+      case "checkout.session.completed": {
         const session = event.data.object;
         await handleCheckoutSessionCompleted(session);
         break;
       }
-      case 'customer.subscription.created': {
+      case "customer.subscription.created": {
         const subscription = event.data.object;
         await handleSubscriptionCreated(subscription);
         break;
       }
-      case 'customer.subscription.updated': {
+      case "customer.subscription.updated": {
         const subscription = event.data.object;
         await handleSubscriptionUpdated(subscription);
         break;
       }
-      case 'customer.subscription.deleted': {
+      case "customer.subscription.deleted": {
         const subscription = event.data.object;
         await handleSubscriptionDeleted(subscription);
         break;
       }
-      case 'invoice.payment_succeeded': {
+      case "invoice.payment_succeeded": {
         const invoice = event.data.object;
         await handleInvoicePaymentSucceeded(invoice);
         break;
       }
-      case 'invoice.payment_failed': {
+      case "invoice.payment_failed": {
         const invoice = event.data.object;
         await handleInvoicePaymentFailed(invoice);
         break;
       }
-      case 'payment_intent.succeeded': {
+      case "payment_intent.succeeded": {
         const paymentIntent = event.data.object;
         await handlePaymentIntentSucceeded(paymentIntent);
         break;
       }
-      case 'payment_intent.payment_failed': {
+      case "payment_intent.payment_failed": {
         const paymentIntent = event.data.object;
         await handlePaymentIntentFailed(paymentIntent);
         break;
       }
-      case 'charge.refunded': {
+      case "charge.refunded": {
         const charge = event.data.object;
         await handleChargeRefunded(charge);
         break;
@@ -87,7 +87,7 @@ exports.handleWebhook = async (req, res) => {
 
     res.json({ received: true });
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error("Webhook error:", error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -98,7 +98,7 @@ exports.handleWebhook = async (req, res) => {
 
 async function handleSubscriptionCreated(subscription) {
   console.log("📋 Subscription created:", subscription.id);
-  
+
   const stripeSubscriptionId = subscription.id;
   const customerId = subscription.customer;
 
@@ -115,7 +115,10 @@ async function handleSubscriptionCreated(subscription) {
   }
 
   // ✅ FIX: Safely extract date values with fallbacks
-  const startSeconds = subscription.current_period_start || subscription.start_date || subscription.created;
+  const startSeconds =
+    subscription.current_period_start ||
+    subscription.start_date ||
+    subscription.created;
   const endSeconds = subscription.current_period_end || subscription.trial_end;
 
   // ✅ FIX: Only set dates if values exist
@@ -142,25 +145,32 @@ async function handleSubscriptionUpdated(subscription) {
   });
 
   if (!subscriptionRecord) {
-    console.log("⚠️ Subscription record not found for Stripe ID:", subscription.id);
+    console.log(
+      "⚠️ Subscription record not found for Stripe ID:",
+      subscription.id
+    );
     return;
   }
 
   // ✅ FIX: Safely extract and validate date values
   const startSeconds = subscription.current_period_start;
   const endSeconds = subscription.current_period_end;
-  
+
   // ✅ FIX: Only update dates if they exist and are valid numbers
-  if (startSeconds && typeof startSeconds === 'number' && !isNaN(startSeconds)) {
+  if (
+    startSeconds &&
+    typeof startSeconds === "number" &&
+    !isNaN(startSeconds)
+  ) {
     subscriptionRecord.currentPeriodStart = new Date(startSeconds * 1000);
   }
-  
-  if (endSeconds && typeof endSeconds === 'number' && !isNaN(endSeconds)) {
+
+  if (endSeconds && typeof endSeconds === "number" && !isNaN(endSeconds)) {
     subscriptionRecord.currentPeriodEnd = new Date(endSeconds * 1000);
   }
 
   const previousStatus = subscriptionRecord.status;
-  
+
   // Update status and other fields
   subscriptionRecord.status = subscription.status;
   subscriptionRecord.cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
@@ -195,7 +205,10 @@ async function handleSubscriptionDeleted(subscription) {
   });
 
   if (!subscriptionRecord) {
-    console.log("⚠️ Subscription record not found for Stripe ID:", subscription.id);
+    console.log(
+      "⚠️ Subscription record not found for Stripe ID:",
+      subscription.id
+    );
     return;
   }
 
@@ -223,7 +236,10 @@ async function handleInvoicePaymentSucceeded(invoice) {
   });
 
   if (!subscriptionRecord) {
-    console.log("⚠️ Subscription record not found for Stripe ID:", invoice.subscription);
+    console.log(
+      "⚠️ Subscription record not found for Stripe ID:",
+      invoice.subscription
+    );
     return;
   }
 
@@ -256,7 +272,10 @@ async function handleInvoicePaymentFailed(invoice) {
   });
 
   if (!subscriptionRecord) {
-    console.log("⚠️ Subscription record not found for Stripe ID:", invoice.subscription);
+    console.log(
+      "⚠️ Subscription record not found for Stripe ID:",
+      invoice.subscription
+    );
     return;
   }
 
@@ -281,7 +300,9 @@ async function handleInvoicePaymentFailed(invoice) {
 async function handleChargeRefunded(charge) {
   console.log("🔄 Charge refunded:", charge.id);
 
-  const payment = await Payment.findOne({ paymentIntentId: charge.payment_intent });
+  const payment = await Payment.findOne({
+    paymentIntentId: charge.payment_intent,
+  });
   if (!payment) {
     console.log("⚠️ Payment record not found for charge:", charge.id);
     return;
@@ -325,16 +346,15 @@ async function handleChargeRefunded(charge) {
 
 // dkjfkdafd
 
-
 async function handleCheckoutSessionCompleted(session) {
-  console.log('💰 Checkout session completed:', session);
-  
+  console.log("💰 Checkout session completed:", session);
+
   const metadata = session.metadata || {};
   const { paymentId, userId, type } = metadata;
-  const user = await User.findById(userId)
+  const user = await User.findById(userId);
 
-  if(!user){
-    return console.log("User is not found")
+  if (!user) {
+    return console.log("User is not found");
   }
 
   // Only process connection fee payments
@@ -344,31 +364,31 @@ async function handleCheckoutSessionCompleted(session) {
   // }
 
   if (!paymentId || !userId) {
-    console.error('❌ Missing paymentId or userId in metadata');
+    console.error("❌ Missing paymentId or userId in metadata");
     return;
   }
 
   // Find the payment record
   let payment = await Payment.findById(paymentId);
   if (!payment) {
-    console.error('❌ Payment record not found:', paymentId);
+    console.error("❌ Payment record not found:", paymentId);
     return;
   }
 
   // Check if already processed
-  if (payment.status === 'succeeded') {
-    console.log('✅ Payment already processed:', paymentId);
+  if (payment.status === "succeeded") {
+    console.log("✅ Payment already processed:", paymentId);
     return;
   }
 
   // Verify session payment status
-  if (session.payment_status !== 'paid') {
-    console.log('⚠️ Session payment status not paid:', session.payment_status);
+  if (session.payment_status !== "paid") {
+    console.log("⚠️ Session payment status not paid:", session.payment_status);
     return;
   }
 
   // Update payment
-  payment.status = 'succeeded';
+  payment.status = "succeeded";
   payment.stripePaymentIntentId = session.payment_intent;
   payment.paymentDate = new Date();
   await payment.save();
@@ -410,27 +430,33 @@ async function handleCheckoutSessionCompleted(session) {
     connectionFeePaymentId: payment._id,
   });
 
+  const connection = await ConnectionModel.findOne({
+    userId: userId,
+  });
+
   // Send notification to user
   await createNotification(
     userId,
-    'connection_fee_paid',
-    '✅ Connection Fee Paid',
-    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}. You can now create unlimited connections.`,
+    "connection_fee_paid",
+    "✅ Connection Fee Paid",
+    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(
+      2
+    )}. You can now create unlimited connections.`,
     {
       paymentId: payment._id,
-      connectionId: 'connection._id',
+      connectionId: connection._id,
       amount: payment.amount,
     }
   );
 
-  console.log('✅ Connection fee payment processed:', paymentId);
+  console.log("✅ Connection fee payment processed:", paymentId);
 }
 
 /**
  * Handle payment_intent.succeeded for connection fee
  */
 async function handlePaymentIntentSucceeded(paymentIntent) {
-  console.log('💰 Payment intent succeeded:', paymentIntent);
+  console.log("💰 Payment intent succeeded:", paymentIntent);
 
   const metadata = paymentIntent.metadata || {};
   const { paymentId, type } = metadata;
@@ -443,25 +469,25 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
   // }
 
   if (!paymentId) {
-    console.log('⚠️ No paymentId in metadata for connection fee');
+    console.log("⚠️ No paymentId in metadata for connection fee");
     return;
   }
 
   // Find the payment record
   let payment = await Payment.findById(paymentId);
   if (!payment) {
-    console.log('⚠️ Payment record not found for intent:', paymentIntent.id);
+    console.log("⚠️ Payment record not found for intent:", paymentIntent.id);
     return;
   }
 
   // Check if already processed
-  if (payment.status === 'succeeded') {
-    console.log('✅ Payment already processed:', paymentId);
+  if (payment.status === "succeeded") {
+    console.log("✅ Payment already processed:", paymentId);
     return;
   }
 
   // Update payment
-  payment.status = 'succeeded';
+  payment.status = "succeeded";
   payment.stripePaymentIntentId = paymentIntent.id;
   payment.paymentDate = new Date();
   await payment.save();
@@ -506,9 +532,11 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
   // Send notification
   await createNotification(
     payment.customerId,
-    'connection_fee_paid',
-    '✅ Connection Fee Paid',
-    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}.`,
+    "connection_fee_paid",
+    "✅ Connection Fee Paid",
+    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(
+      2
+    )}.`,
     {
       paymentId: payment._id,
       connectionId: connection._id,
@@ -516,14 +544,14 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
     }
   );
 
-  console.log('✅ Connection fee payment processed via webhook:', paymentId);
+  console.log("✅ Connection fee payment processed via webhook:", paymentId);
 }
 
 /**
  * Handle payment_intent.payment_failed for connection fee
  */
 async function handlePaymentIntentFailed(paymentIntent) {
-  console.log('❌ Payment failed:', paymentIntent.id);
+  console.log("❌ Payment failed:", paymentIntent.id);
 
   const metadata = paymentIntent.metadata || {};
   const { paymentId, type } = metadata;
@@ -534,31 +562,34 @@ async function handlePaymentIntentFailed(paymentIntent) {
   // }
 
   if (!paymentId) {
-    console.log('⚠️ No paymentId in metadata for connection fee');
+    console.log("⚠️ No paymentId in metadata for connection fee");
     return;
   }
 
   const payment = await Payment.findById(paymentId);
   if (!payment) {
-    console.log('⚠️ Payment record not found for intent:', paymentIntent.id);
+    console.log("⚠️ Payment record not found for intent:", paymentIntent.id);
     return;
   }
 
-  payment.status = 'failed';
-  payment.failedReason = paymentIntent.last_payment_error?.message || 'Payment failed';
+  payment.status = "failed";
+  payment.failedReason =
+    paymentIntent.last_payment_error?.message || "Payment failed";
   await payment.save();
 
   // Notify user
   await createNotification(
     payment.customerId,
-    'payment_failed',
-    '❌ Payment Failed',
-    `Your connection fee payment of £${payment.amount.toFixed(2)} failed. Please try again.`,
+    "payment_failed",
+    "❌ Payment Failed",
+    `Your connection fee payment of £${payment.amount.toFixed(
+      2
+    )} failed. Please try again.`,
     {
       paymentId: payment._id,
       error: payment.failedReason,
     }
   );
 
-  console.log('⚠️ Connection fee payment marked as failed:', paymentId);
+  console.log("⚠️ Connection fee payment marked as failed:", paymentId);
 }

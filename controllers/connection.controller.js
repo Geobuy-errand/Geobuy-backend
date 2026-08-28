@@ -110,6 +110,8 @@ exports.payConnectionFee = async (req, res) => {
         expiresAt: new Date(),
       });
       await connection.save();
+
+      console.log({connection})
   
       // Update user record
       await User.findByIdAndUpdate(req.user._id, {
