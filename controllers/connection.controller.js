@@ -191,7 +191,10 @@ exports.createConnection = async (req, res) => {
         meetingType,
         connectionDate,
         connectionTime,
+        state
       } = req.body;
+      
+      console.log(req.body)
   
       // Check if user has paid the connection fee
       const user = await User.findById(req.user._id);
@@ -271,6 +274,7 @@ exports.createConnection = async (req, res) => {
         message: message || '',
         meetingType: meetingType || 'virtual',
         connectionDate,
+        state,
         connectionTime,
         fee: {
           amount: 0,
