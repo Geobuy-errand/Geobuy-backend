@@ -335,6 +335,10 @@ async function handleCheckoutSessionCompleted(session) {
   const { paymentId, userId, type } = metadata;
   const user = await User.findById(userId)
 
+  if(!user){
+    return console.log("User is not found")
+  }
+
   // Only process connection fee payments
   // if (type !== 'connection_fee') {
   //   console.log('📦 Not a connection fee payment, skipping...');
@@ -372,34 +376,34 @@ async function handleCheckoutSessionCompleted(session) {
   await payment.save();
 
   // Create virtual connection record
-  const connection = new ConnectionModel({
-    userId: userId,
-    fullName: metadata.userName || 'User',
-    email: metadata.userEmail || '',
-    phoneNumber: '',
-    location: {
-      type: 'Point',
-      coordinates: [0, 0],
-      address: '',
-      town: '',
-      postcode: '',
-    },
-    purpose: 'payment_only',
-    status: 'completed',
-    fee: {
-      amount: payment.amount,
-      currency: 'GBP',
-      paid: true,
-      paymentId: payment._id,
-      paidAt: new Date(),
-    },
-    userHasPaidConnectionFee: true,
-    userPaymentId: payment._id,
-    userPaymentDate: new Date(),
-    isActive: false,
-    expiresAt: new Date(),
-  });
-  await connection.save();
+  // const connection = new ConnectionModel({
+  //   userId: userId,
+  //   fullName: user.fullName || 'user',
+  //   email: user.email || '',
+  //   phoneNumber: user.phoneNumber,
+  //   location: {
+  //     type: 'Point',
+  //     coordinates: user.location?.coordinates || [0, 0],
+  //     address: user.address,
+  //     town: '',
+  //     postcode: '',
+  //   },
+  //   purpose: 'payment_only',
+  //   status: 'completed',
+  //   fee: {
+  //     amount: payment.amount,
+  //     currency: 'GBP',
+  //     paid: true,
+  //     paymentId: payment._id,
+  //     paidAt: new Date(),
+  //   },
+  //   userHasPaidConnectionFee: true,
+  //   userPaymentId: payment._id,
+  //   userPaymentDate: new Date(),
+  //   isActive: false,
+  //   expiresAt: new Date(),
+  // });
+  // await connection.save();
 
   // Update user
   await User.findByIdAndUpdate(userId, {
