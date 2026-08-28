@@ -418,7 +418,7 @@ async function handleCheckoutSessionCompleted(session) {
     `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}. You can now create unlimited connections.`,
     {
       paymentId: payment._id,
-      connectionId: connection._id,
+      connectionId: 'connection._id',
       amount: payment.amount,
     }
   );
