@@ -5,8 +5,6 @@ const Transaction = require("../models/Transaction.model");
 const Errand = require("../models/Errand.model");
 const User = require("../models/User.model");
 const createNotification = require("../utils/create-notification");
-const ConnectionModel = require("../models/Connection.model");
-const { sendTemplateEmail, subscriptionTemplates } = require('../utils/email-templates');
 
 
 /**
@@ -329,7 +327,7 @@ async function handleChargeRefunded(charge) {
 
 
 async function handleCheckoutSessionCompleted(session) {
-  console.log('💰 Checkout session completed:', session.id);
+  console.log('💰 Checkout session completed:', session);
   
   const metadata = session.metadata || {};
   const { paymentId, userId, type } = metadata;
@@ -432,7 +430,7 @@ async function handleCheckoutSessionCompleted(session) {
  * Handle payment_intent.succeeded for connection fee
  */
 async function handlePaymentIntentSucceeded(paymentIntent) {
-  console.log('💰 Payment succeeded:', paymentIntent);
+  console.log('💰 Payment intent succeeded:', paymentIntent);
 
   const metadata = paymentIntent.metadata || {};
   const { paymentId, type } = metadata;
