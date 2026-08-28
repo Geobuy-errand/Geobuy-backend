@@ -347,7 +347,7 @@ async function handleChargeRefunded(charge) {
 // dkjfkdafd
 
 async function handleCheckoutSessionCompleted(session) {
-  console.log("💰 Checkout session completed:", session);
+  console.log("💰 Checkout session completed:");
 
   const metadata = session.metadata || {};
   const { paymentId, userId, type } = metadata;
@@ -434,7 +434,6 @@ async function handleCheckoutSessionCompleted(session) {
     userId: userId,
   });
 
-  console.log('handleCheckoutSessionCompleted-connection', connection)
 
 
   // Send notification to user
@@ -459,7 +458,7 @@ async function handleCheckoutSessionCompleted(session) {
  * Handle payment_intent.succeeded for connection fee
  */
 async function handlePaymentIntentSucceeded(paymentIntent) {
-  console.log("💰 Payment intent succeeded:", paymentIntent);
+  console.log("💰 Payment intent succeeded:");
 
   const metadata = paymentIntent.metadata || {};
   const { paymentId, type } = metadata;
