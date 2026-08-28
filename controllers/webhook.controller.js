@@ -447,7 +447,7 @@ async function handleCheckoutSessionCompleted(session) {
     )}. You can now create unlimited connections.`,
     {
       paymentId: payment._id,
-      connectionId: connection._id ?? null,
+      ...(connection && {connectionId: connection._id}),
       amount: payment.amount,
     }
   );
