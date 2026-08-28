@@ -434,6 +434,7 @@ async function handleCheckoutSessionCompleted(session) {
     userId: userId,
   });
 
+
   // Send notification to user
   await createNotification(
     userId,
@@ -444,7 +445,7 @@ async function handleCheckoutSessionCompleted(session) {
     )}. You can now create unlimited connections.`,
     {
       paymentId: payment._id,
-      connectionId: connection._id,
+      connectionId: connection._id ?? null,
       amount: payment.amount,
     }
   );
@@ -529,6 +530,9 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
     connectionFeePaymentId: payment._id,
   });
 
+  const connection = await ConnectionModel.findOne({
+    userId: payment.customerId,
+  });
   // Send notification
   await createNotification(
     payment.customerId,
