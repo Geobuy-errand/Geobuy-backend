@@ -432,17 +432,17 @@ async function handleCheckoutSessionCompleted(session) {
  * Handle payment_intent.succeeded for connection fee
  */
 async function handlePaymentIntentSucceeded(paymentIntent) {
-  console.log('💰 Payment succeeded:', paymentIntent.id);
+  console.log('💰 Payment succeeded:', paymentIntent);
 
   const metadata = paymentIntent.metadata || {};
   const { paymentId, type } = metadata;
 
   // Only process connection fee payments
-  if (type !== 'connection_fee') {
-    // Skip - this might be a regular booking payment
-    // Your existing booking payment logic will handle it
-    return;
-  }
+  // if (type !== 'connection_fee') {
+  //   // Skip - this might be a regular booking payment
+  //   // Your existing booking payment logic will handle it
+  //   return;
+  // }
 
   if (!paymentId) {
     console.log('⚠️ No paymentId in metadata for connection fee');
@@ -469,34 +469,34 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
   await payment.save();
 
   // Create virtual connection record
-  const connection = new Connection({
-    userId: payment.customerId,
-    fullName: metadata.userName || 'User',
-    email: metadata.userEmail || '',
-    phoneNumber: '',
-    location: {
-      type: 'Point',
-      coordinates: [0, 0],
-      address: '',
-      town: '',
-      postcode: '',
-    },
-    purpose: 'payment_only',
-    status: 'completed',
-    fee: {
-      amount: payment.amount,
-      currency: 'GBP',
-      paid: true,
-      paymentId: payment._id,
-      paidAt: new Date(),
-    },
-    userHasPaidConnectionFee: true,
-    userPaymentId: payment._id,
-    userPaymentDate: new Date(),
-    isActive: false,
-    expiresAt: new Date(),
-  });
-  await connection.save();
+  // const connection = new Connection({
+  //   userId: payment.customerId,
+  //   fullName: metadata.userName || 'User',
+  //   email: metadata.userEmail || '',
+  //   phoneNumber: '',
+  //   location: {
+  //     type: 'Point',
+  //     coordinates: [0, 0],
+  //     address: '',
+  //     town: '',
+  //     postcode: '',
+  //   },
+  //   purpose: 'payment_only',
+  //   status: 'completed',
+  //   fee: {
+  //     amount: payment.amount,
+  //     currency: 'GBP',
+  //     paid: true,
+  //     paymentId: payment._id,
+  //     paidAt: new Date(),
+  //   },
+  //   userHasPaidConnectionFee: true,
+  //   userPaymentId: payment._id,
+  //   userPaymentDate: new Date(),
+  //   isActive: false,
+  //   expiresAt: new Date(),
+  // });
+  // await connection.save();
 
   // Update user
   await User.findByIdAndUpdate(payment.customerId, {
@@ -531,9 +531,9 @@ async function handlePaymentIntentFailed(paymentIntent) {
   const { paymentId, type } = metadata;
 
   // Only process connection fee payments
-  if (type !== 'connection_fee') {
-    return;
-  }
+  // if (type !== 'connection_fee') {
+  //   return;
+  // }
 
   if (!paymentId) {
     console.log('⚠️ No paymentId in metadata for connection fee');
