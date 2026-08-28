@@ -111,7 +111,7 @@ exports.payConnectionFee = async (req, res) => {
       });
       await connection.save();
 
-      console.log({connection})
+      console.log({connection},'from pay connection fee')
   
       // Update user record
       await User.findByIdAndUpdate(req.user._id, {
@@ -283,6 +283,7 @@ exports.createConnection = async (req, res) => {
       });
   
       await connection.save();
+      console.log('from create connection', connection)
   
       // Send notification to user
       await createNotification(
