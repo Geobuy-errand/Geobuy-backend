@@ -7,6 +7,7 @@ const paymentController = require('../controllers/payment.controller');
 // ============================================================
 // CONNECTION FEE PAYMENT ROUTES (Backend Only - No Frontend Stripe.js)
 // ============================================================
+router.get('/connection-fee', authMiddleware, connectionController.getConnectionFees);
 router.get('/status', authMiddleware, connectionController.getConnectionStatus);
 router.get('/check-payment-status', authMiddleware, paymentController.checkConnectionFeeStatus);
 router.post('/create-checkout-session', authMiddleware, paymentController.createConnectionCheckoutSession);

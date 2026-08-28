@@ -48,7 +48,7 @@ router.use('/subscription', subscriptionRoutes);
 router.use('/subscription-plans', subscriptionPlanRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/connections', connectionRoutes);
-router.use('/api/connect-posts', connectPostRoutes);
+router.use('/connect-posts', connectPostRoutes);
 router.use('/seed', seedRoutes);
 
 module.exports = router;

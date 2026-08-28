@@ -699,3 +699,18 @@ exports.getConnectionStatus = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+exports.getConnectionFees = async (req, res) => {
+  try {
+    const settings = await Settings.getSettings();
+    const CONNECTION_FEE = settings.pricing?.connectionFee || 1.99;
+
+    res.json({
+      connectionFee: CONNECTION_FEE
+    });
+
+  } catch (error) {
+    console.error('❌ Get connection status error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
