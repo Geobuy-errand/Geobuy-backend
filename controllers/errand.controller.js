@@ -1,15 +1,17 @@
-const Errand = require('../models/Errand.model');
-const User = require('../models/User.model');
-const Notification = require('../models/Notification.model');
-const OSRMService = require('../services/osrmService');
-const NominatimService = require('../services/nominatimService');
-const createNotification = require('../utils/create-notification');
-const ChatModel = require('../models/Chat.model');
-const Settings = require('../models/Setting.model');
-const { sendTemplateEmail, errandTemplates } = require('../utils/email-templates');
-const { getPricingSettings } = require('./booking.controller');
+const Errand = require("../models/Errand.model");
+const User = require("../models/User.model");
+const Notification = require("../models/Notification.model");
+const OSRMService = require("../services/osrmService");
+const Payment = require("../models/Payment.model");
+const createNotification = require("../utils/create-notification");
 
+const Wallet = require('../models/Wallet.model');
+const Transaction = require('../models/Transaction.model');
 
+const {
+  sendTemplateEmail,
+  errandTemplates,
+} = require("../utils/email-templates");
 
 // Create errand with UK address validation and free distance calculation
 exports.createErrand = async (req, res) => {
@@ -39,10 +41,10 @@ exports.createErrand = async (req, res) => {
     // ============================================================
     // STEP 1: Get coordinates from address (with fallback)
     // ============================================================
-    
+
     if (!pickup || !pickup.address) {
       return res.status(400).json({
-        message: 'Pickup address is required',
+        message: "Pickup address is required",
       });
     }
 
@@ -58,7 +60,7 @@ exports.createErrand = async (req, res) => {
           pickupCoords = geocodeResult;
         }
       } catch (e) {
-        console.warn('Pickup geocoding failed, using fallback:', e.message);
+        console.warn("Pickup geocoding failed, using fallback:", e.message);
         // Use fallback coordinates (London)
         pickupCoords = { lat: 51.5074, lng: -0.1278 };
       }
@@ -66,7 +68,7 @@ exports.createErrand = async (req, res) => {
 
     if (!dropoff || !dropoff.address) {
       return res.status(400).json({
-        message: 'Dropoff address is required for distance calculation.',
+        message: "Dropoff address is required for distance calculation.",
       });
     }
 
@@ -77,7 +79,7 @@ exports.createErrand = async (req, res) => {
           dropoffCoords = geocodeResult;
         }
       } catch (e) {
-        console.warn('Dropoff geocoding failed, using fallback:', e.message);
+        console.warn("Dropoff geocoding failed, using fallback:", e.message);
         dropoffCoords = { lat: 51.5074, lng: -0.1278 };
       }
     }
@@ -85,7 +87,7 @@ exports.createErrand = async (req, res) => {
     // Calculate distance using OSRM or fallback
     let distanceInMiles = distance || 0;
     let travelDurationMinutes = 0;
-    let travelDurationText = duration || '15 min';
+    let travelDurationText = duration || "15 min";
 
     if (pickupCoords && dropoffCoords) {
       try {
@@ -97,9 +99,12 @@ exports.createErrand = async (req, res) => {
         );
         distanceInMiles = distanceResult.distance.value || distance || 5;
         travelDurationMinutes = distanceResult.duration.value || 15;
-        travelDurationText = distanceResult.duration.text || '15 min';
+        travelDurationText = distanceResult.duration.text || "15 min";
       } catch (e) {
-        console.warn('OSRM distance calculation failed, using provided distance:', e.message);
+        console.warn(
+          "OSRM distance calculation failed, using provided distance:",
+          e.message
+        );
         distanceInMiles = distance || 5;
         travelDurationMinutes = Math.round(distanceInMiles * 3);
         travelDurationText = `${travelDurationMinutes} min`;
@@ -113,28 +118,29 @@ exports.createErrand = async (req, res) => {
     // ============================================================
     // STEP 2: Get User's Subscription Status
     // ============================================================
-    
+
     const user = await User.findById(req.user._id);
-    const isUserSubscribed = isSubscribed || user?.subscription?.isSubscribed || false;
+    const isUserSubscribed =
+      isSubscribed || user?.subscription?.isSubscribed || false;
 
     // ============================================================
     // STEP 3: Calculate Pricing (if not provided from frontend)
     // ============================================================
-    
+
     const BASE_FEE = 3.99;
     const SUBSCRIPTION_DISCOUNT = 20;
     const HEAVY_ITEM_FEE = 2.99;
-    const WAIT_TIME_FEE_PER_MIN = 0.30;
+    const WAIT_TIME_FEE_PER_MIN = 0.3;
     const WAIT_TIME_FREE_MIN = 5;
     const PEAK_URGENT_FEE = 1.99;
-    const EXTRA_STOP_FEE = 1.50;
+    const EXTRA_STOP_FEE = 1.5;
 
     // Get distance rate
     const getDistanceRate = (miles) => {
-      if (miles <= 3) return 0.80;
-      if (miles <= 10) return 0.70;
-      if (miles <= 20) return 0.60;
-      return 0.50;
+      if (miles <= 3) return 0.8;
+      if (miles <= 10) return 0.7;
+      if (miles <= 20) return 0.6;
+      return 0.5;
     };
 
     const ratePerMile = getDistanceRate(distanceInMiles);
@@ -151,7 +157,8 @@ exports.createErrand = async (req, res) => {
     let waitTimeFee = 0;
     if (waitTimeMinutes > WAIT_TIME_FREE_MIN) {
       const extraMinutes = waitTimeMinutes - WAIT_TIME_FREE_MIN;
-      waitTimeFee = Math.round(extraMinutes * WAIT_TIME_FEE_PER_MIN * 100) / 100;
+      waitTimeFee =
+        Math.round(extraMinutes * WAIT_TIME_FEE_PER_MIN * 100) / 100;
       subtotal += waitTimeFee;
     }
 
@@ -175,17 +182,18 @@ exports.createErrand = async (req, res) => {
 
     if (isUserSubscribed) {
       discountPercentage = SUBSCRIPTION_DISCOUNT;
-      discountAmount = Math.round((subtotal * SUBSCRIPTION_DISCOUNT / 100) * 100) / 100;
+      discountAmount =
+        Math.round(((subtotal * SUBSCRIPTION_DISCOUNT) / 100) * 100) / 100;
       total = Math.round((subtotal - discountAmount) * 100) / 100;
     }
 
-    const platformFee = Math.round(total * 0.20 * 100) / 100;
-    const providerAmount = Math.round(total * 0.80 * 100) / 100;
+    const platformFee = Math.round(total * 0.2 * 100) / 100;
+    const providerAmount = Math.round(total * 0.8 * 100) / 100;
 
     // ============================================================
     // STEP 4: Create Errand
     // ============================================================
-    
+
     const errand = new Errand({
       customerId: req.user._id,
       serviceType,
@@ -199,14 +207,15 @@ exports.createErrand = async (req, res) => {
         formattedAddress: dropoff.address,
         coordinates: dropoffCoords,
       },
-      taskDetails: taskDetails || '',
+      taskDetails: taskDetails || "",
       preferredDate,
       preferredTime,
       photos: photos || [],
       requiresLiveTracking: requiresLiveTracking || false,
-      status: 'pending',
+      status: "pending",
       distance: Math.round(distanceInMiles * 100) / 100,
-      distanceText: distanceText || `${Math.round(distanceInMiles * 10) / 10} miles`,
+      distanceText:
+        distanceText || `${Math.round(distanceInMiles * 10) / 10} miles`,
       duration: Math.round(travelDurationMinutes * 100) / 100,
       durationText: travelDurationText,
       // Pricing fields
@@ -236,18 +245,18 @@ exports.createErrand = async (req, res) => {
     // ============================================================
     // STEP 5: Find and Notify Nearby Providers
     // ============================================================
-    
+
     const providers = await User.find({
-      role: 'provider',
+      role: "provider",
       isActive: true,
       isAvailable: true,
-      verificationStatus: 'approved',
+      verificationStatus: "approved",
     }).limit(20);
 
     let nearestProviders = [];
 
     if (providers.length > 0 && pickupCoords) {
-      const providerCoords = providers.map(p => ({
+      const providerCoords = providers.map((p) => ({
         lat: p.location?.coordinates?.[1] || 51.5074,
         lon: p.location?.coordinates?.[0] || -0.1276,
       }));
@@ -259,17 +268,19 @@ exports.createErrand = async (req, res) => {
           providerCoords
         );
 
-        const sortedProviders = providers.map((provider, index) => ({
-          ...provider.toObject(),
-          distance: distances[index]?.distance || 999,
-          distanceText: distances[index]?.distance 
-            ? `${distances[index].distance.toFixed(1)} miles` 
-            : 'Unknown',
-          duration: distances[index]?.duration || 999,
-          durationText: distances[index]?.duration
-            ? `${Math.round(distances[index].duration)} min`
-            : 'Unknown',
-        })).sort((a, b) => a.distance - b.distance);
+        const sortedProviders = providers
+          .map((provider, index) => ({
+            ...provider.toObject(),
+            distance: distances[index]?.distance || 999,
+            distanceText: distances[index]?.distance
+              ? `${distances[index].distance.toFixed(1)} miles`
+              : "Unknown",
+            duration: distances[index]?.duration || 999,
+            durationText: distances[index]?.duration
+              ? `${Math.round(distances[index].duration)} min`
+              : "Unknown",
+          }))
+          .sort((a, b) => a.distance - b.distance);
 
         nearestProviders = sortedProviders.slice(0, 5);
 
@@ -277,11 +288,11 @@ exports.createErrand = async (req, res) => {
         for (const provider of nearestProviders) {
           const notification = new Notification({
             userId: provider._id,
-            type: 'booking_created',
-            title: 'New Errand Available',
+            type: "booking_created",
+            title: "New Errand Available",
             message: `New ${serviceType} errand available ${provider.distanceText} from you`,
-            data: { 
-              errandId: errand._id, 
+            data: {
+              errandId: errand._id,
               distance: provider.distanceText,
               duration: provider.durationText,
               serviceType,
@@ -292,9 +303,9 @@ exports.createErrand = async (req, res) => {
 
           // Emit socket event
           try {
-            const io = req.app.get('io');
+            const io = req.app.get("io");
             if (io) {
-              io.to(`user_${provider._id}`).emit('new-errand-available', {
+              io.to(`user_${provider._id}`).emit("new-errand-available", {
                 errandId: errand._id,
                 serviceType,
                 distance: provider.distanceText,
@@ -304,11 +315,11 @@ exports.createErrand = async (req, res) => {
               });
             }
           } catch (socketError) {
-            console.warn('Socket emit error:', socketError.message);
+            console.warn("Socket emit error:", socketError.message);
           }
         }
 
-        errand.matchedProviders = nearestProviders.map(p => ({
+        errand.matchedProviders = nearestProviders.map((p) => ({
           providerId: p._id,
           distance: p.distance,
           distanceText: p.distanceText,
@@ -316,21 +327,22 @@ exports.createErrand = async (req, res) => {
         }));
         await errand.save();
       } catch (e) {
-        console.warn('Provider distance calculation failed:', e.message);
+        console.warn("Provider distance calculation failed:", e.message);
       }
     }
 
     // ============================================================
     // STEP 6: Response
     // ============================================================
-    
+
     res.status(201).json({
-      message: 'Errand created successfully',
+      message: "Errand created successfully",
       errand,
       priceBreakdown: {
         distance: {
           miles: Math.round(distanceInMiles * 100) / 100,
-          text: distanceText || `${Math.round(distanceInMiles * 10) / 10} miles`,
+          text:
+            distanceText || `${Math.round(distanceInMiles * 10) / 10} miles`,
           ratePerMile: ratePerMile,
         },
         duration: {
@@ -357,7 +369,7 @@ exports.createErrand = async (req, res) => {
           providerAmount: providerAmount,
         },
       },
-      nearestProviders: nearestProviders.map(p => ({
+      nearestProviders: nearestProviders.map((p) => ({
         id: p._id,
         name: p.fullName,
         distance: p.distanceText,
@@ -365,28 +377,25 @@ exports.createErrand = async (req, res) => {
         rating: p.averageRating,
       })),
     });
-
   } catch (error) {
-    console.error('Create errand error:', error);
-    res.status(500).json({ 
-      message: 'Failed to create errand',
+    console.error("Create errand error:", error);
+    res.status(500).json({
+      message: "Failed to create errand",
       error: error.message,
     });
   }
 };
 
-
-
 // Get available errands for providers
 exports.getAvailableErrands = async (req, res) => {
   try {
     const errands = await Errand.find({
-      status: 'pending',
+      status: "pending",
       providerId: null,
     })
-      .populate('customerId', 'fullName phoneNumber address')
+      .populate("customerId", "fullName phoneNumber address")
       .sort({ createdAt: -1 });
-    
+
     res.json(errands);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -397,17 +406,17 @@ exports.getAvailableErrands = async (req, res) => {
 exports.getErrands = async (req, res) => {
   try {
     let query = {};
-    if (req.user.role === 'customer') {
+    if (req.user.role === "customer") {
       query.customerId = req.user._id;
-    } else if (req.user.role === 'provider') {
+    } else if (req.user.role === "provider") {
       query.providerId = req.user._id;
     }
-    
+
     const errands = await Errand.find(query)
-      .populate('customerId', 'fullName email phoneNumber')
-      .populate('providerId', 'fullName email phoneNumber')
+      .populate("customerId", "fullName email phoneNumber")
+      .populate("providerId", "fullName email phoneNumber")
       .sort({ createdAt: -1 });
-    
+
     res.json(errands);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -418,33 +427,32 @@ exports.getErrands = async (req, res) => {
 exports.getAvailableErrands = async (req, res) => {
   try {
     const errands = await Errand.find({
-      status: 'pending',
+      status: "pending",
       providerId: null,
     })
-      .populate('customerId', 'fullName phoneNumber address')
+      .populate("customerId", "fullName phoneNumber address")
       .sort({ createdAt: -1 });
-    
+
     res.json(errands);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
 };
 
-
 // Accept errand
 exports.acceptErrand = async (req, res) => {
   try {
     const errand = await Errand.findById(req.params.id);
     if (!errand) {
-      return res.status(404).json({ message: 'Errand not found' });
+      return res.status(404).json({ message: "Errand not found" });
     }
 
-    if (errand.status !== 'pending') {
-      return res.status(400).json({ message: 'Errand is not available' });
+    if (errand.status !== "pending") {
+      return res.status(400).json({ message: "Errand is not available" });
     }
 
     errand.providerId = req.user._id;
-    errand.status = 'accepted';
+    errand.status = "accepted";
     errand.acceptedAt = new Date();
 
     await errand.save();
@@ -452,16 +460,16 @@ exports.acceptErrand = async (req, res) => {
     // Notify customer
     const notification = new Notification({
       userId: errand.customerId,
-      type: 'booking_accepted',
-      title: 'Errand Accepted',
+      type: "booking_accepted",
+      title: "Errand Accepted",
       message: `${req.user.fullName} has accepted your errand`,
       data: { errandId: errand._id },
     });
     await notification.save();
 
     // Emit socket event
-    const io = req.app.get('io');
-    io.to(`errand_${errand._id}`).emit('errand-accepted', {
+    const io = req.app.get("io");
+    io.to(`errand_${errand._id}`).emit("errand-accepted", {
       errandId: errand._id,
       providerId: req.user._id,
       providerName: req.user.fullName,
@@ -474,28 +482,28 @@ exports.acceptErrand = async (req, res) => {
         customerName,
         errand.errandId,
         req.user.fullName,
-        errand.preferredDate || 'To be scheduled'
+        errand.preferredDate || "To be scheduled"
       ).subject,
       errandTemplates.errandAccepted(
         customerName,
         errand.errandId,
         req.user.fullName,
-        errand.preferredDate || 'To be scheduled'
+        errand.preferredDate || "To be scheduled"
       ).title,
       errandTemplates.errandAccepted(
         customerName,
         errand.errandId,
         req.user.fullName,
-        errand.preferredDate || 'To be scheduled'
+        errand.preferredDate || "To be scheduled"
       ).content,
       errandTemplates.errandAccepted(
         customerName,
         errand.errandId,
         req.user.fullName,
-        errand.preferredDate || 'To be scheduled'
+        errand.preferredDate || "To be scheduled"
       ).button
     );
-    
+
     // Notify provider (the one who accepted)
     await sendTemplateEmail(
       req.user.email,
@@ -503,30 +511,30 @@ exports.acceptErrand = async (req, res) => {
         req.user.fullName,
         errand.errandId,
         errand.serviceType,
-        errand.pickup?.address || 'Pickup location'
+        errand.pickup?.address || "Pickup location"
       ).subject,
       errandTemplates.youAcceptedErrand(
         req.user.fullName,
         errand.errandId,
         errand.serviceType,
-        errand.pickup?.address || 'Pickup location'
+        errand.pickup?.address || "Pickup location"
       ).title,
       errandTemplates.youAcceptedErrand(
         req.user.fullName,
         errand.errandId,
         errand.serviceType,
-        errand.pickup?.address || 'Pickup location'
+        errand.pickup?.address || "Pickup location"
       ).content,
       errandTemplates.youAcceptedErrand(
         req.user.fullName,
         errand.errandId,
         errand.serviceType,
-        errand.pickup?.address || 'Pickup location'
+        errand.pickup?.address || "Pickup location"
       ).button
     );
 
     res.json({
-      message: 'Errand accepted successfully',
+      message: "Errand accepted successfully",
       errand,
     });
   } catch (error) {
@@ -536,6 +544,7 @@ exports.acceptErrand = async (req, res) => {
 
 // Update errand status
 // Update errand status with socket emission
+// Update errand status with auto-funds release on completion
 exports.updateErrandStatus = async (req, res) => {
   try {
     const { status, location } = req.body;
@@ -551,7 +560,6 @@ exports.updateErrandStatus = async (req, res) => {
     const isCustomer = errand.customerId._id.toString() === req.user._id.toString();
     const isProvider = errand.providerId && errand.providerId._id.toString() === req.user._id.toString();
 
-
     if (!isCustomer && !isProvider && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Access denied' });
     }
@@ -561,8 +569,8 @@ exports.updateErrandStatus = async (req, res) => {
       accepted: ['en_route', 'cancelled'],
       en_route: ['collected', 'cancelled'],
       collected: ['delivered', 'cancelled'],
-      delivered: ['completed'],
-      completed: [],
+      delivered: ['completed', 'cancelled'],
+      completed: [], // No further transitions
       cancelled: [],
     };
 
@@ -570,6 +578,7 @@ exports.updateErrandStatus = async (req, res) => {
       return res.status(400).json({ message: 'Invalid status transition' });
     }
 
+    const previousStatus = errand.status;
     errand.status = status;
     
     const statusMap = {
@@ -585,6 +594,11 @@ exports.updateErrandStatus = async (req, res) => {
       errand[statusMap[status]] = new Date();
     }
 
+    if (status === 'cancelled') {
+      errand.cancellationReason = req.body.reason || 'Cancelled by user';
+      errand.cancelledBy = req.user.role;
+    }
+
     if (location) {
       errand.locationUpdates.push({
         lat: location.lat,
@@ -596,13 +610,92 @@ exports.updateErrandStatus = async (req, res) => {
 
     await errand.save();
 
-    // Get payment info if completed
-    let paymentInfo = null;
+    // ============================================================
+    // ✅ AUTO-RELEASE FUNDS ON COMPLETION
+    // ============================================================
     if (status === 'completed') {
-      paymentInfo = await Payment.findOne({ errandId: errand._id });
+      // Check if payment exists and is in escrow
+      const payment = await Payment.findOne({ 
+        errandId: errand._id,
+        status: { $in: ['succeeded', 'processing'] }
+      });
+
+      if (payment && payment.disbursementStatus !== 'completed') {
+        try {
+          // ✅ Auto-release funds to provider's wallet
+          
+          // Get provider's wallet
+          const providerWallet = await Wallet.findOne({ userId: errand.providerId });
+          
+          if (providerWallet) {
+            // Add funds to wallet
+            const amountToAdd = payment.providerAmount || (payment.amount * 0.80);
+            
+            providerWallet.balance += amountToAdd;
+            providerWallet.totalEarned += amountToAdd;
+            await providerWallet.save();
+
+            // Update payment disbursement
+            payment.disbursementStatus = 'completed';
+            payment.disbursementDate = new Date();
+            payment.disbursementReference = `auto-release-${Date.now()}`;
+            await payment.save();
+
+            // Update errand payment status
+            errand.paymentStatus = 'released';
+            await errand.save();
+
+            // Create transaction record for provider
+            const providerTransaction = new Transaction({
+              userId: errand.providerId,
+              type: 'payout',
+              amount: amountToAdd,
+              status: 'completed',
+              description: `Auto-release for errand #${errand.errandId}`,
+              reference: `auto-release-${Date.now()}`,
+              completedAt: new Date(),
+            });
+            await providerTransaction.save();
+
+            // Notify provider
+            await createNotification(
+              errand.providerId,
+              'payment_released',
+              '💰 Funds Released!',
+              `£${amountToAdd.toFixed(2)} has been added to your wallet for errand #${errand.errandId}`,
+              { 
+                errandId: errand._id, 
+                amount: amountToAdd,
+                paymentId: payment._id,
+              }
+            );
+
+            // Notify customer
+            await createNotification(
+              errand.customerId._id,
+              'payment_released',
+              '✅ Funds Released',
+              `Payment for errand #${errand.errandId} has been released to the provider.`,
+              { 
+                errandId: errand._id, 
+                amount: payment.amount,
+                paymentId: payment._id,
+              }
+            );
+
+            console.log(`✅ Funds auto-released for errand ${errand.errandId}: £${amountToAdd.toFixed(2)}`);
+          } else {
+            console.warn(`⚠️ No wallet found for provider ${errand.providerId}`);
+          }
+        } catch (releaseError) {
+          console.error('❌ Auto-release failed:', releaseError);
+          // Don't fail the status update if release fails
+          // Admin can manually release later
+        }
+      }
     }
 
-    // Create notification
+    // Create notification for status change
     const recipientId = isCustomer ? errand.providerId?._id : errand.customerId._id;
     if (recipientId) {
       await createNotification(
@@ -614,7 +707,7 @@ exports.updateErrandStatus = async (req, res) => {
       );
     }
 
-    // Emit socket events to all relevant parties
+    // Emit socket events
     const io = req.app.get('io');
     if (io) {
       // Customer
@@ -635,6 +728,15 @@ exports.updateErrandStatus = async (req, res) => {
           timestamp: new Date(),
           errand: errand,
         });
+
+        // If completed, also emit funds released
+        if (status === 'completed') {
+          io.to(`user_${errand.providerId._id}`).emit('funds-released', {
+            errandId: errand._id,
+            amount: errand.providerAmount,
+            timestamp: new Date(),
+          });
+        }
       }
 
       // Admin
@@ -669,11 +771,11 @@ exports.updateErrandStatus = async (req, res) => {
           customerId: errand.customerId._id,
           providerId: errand.providerId?._id,
           total: errand.total,
-          paymentId: paymentInfo?._id,
+          paymentId: payment?._id,
           timestamp: new Date(),
         });
 
-        // Send provider rating notification
+        // Send provider rating notification to customer
         io.to(`user_${errand.customerId._id}`).emit('rate-provider', {
           errandId: errand._id,
           providerId: errand.providerId?._id,
@@ -682,96 +784,10 @@ exports.updateErrandStatus = async (req, res) => {
       }
     }
 
-
-    // In updateErrandStatus - when status is 'completed'
-if (status === 'completed') {
-  // Notify customer
-  await sendTemplateEmail(
-    errand.customerId.email,
-    errandTemplates.errandCompleted(
-      errand.customerId.fullName,
-      errand.errandId,
-      errand.providerId?.fullName || 'Provider'
-    ).subject,
-    errandTemplates.errandCompleted(
-      errand.customerId.fullName,
-      errand.errandId,
-      errand.providerId?.fullName || 'Provider'
-    ).title,
-    errandTemplates.errandCompleted(
-      errand.customerId.fullName,
-      errand.errandId,
-      errand.providerId?.fullName || 'Provider'
-    ).content,
-    errandTemplates.errandCompleted(
-      errand.customerId.fullName,
-      errand.errandId,
-      errand.providerId?.fullName || 'Provider'
-    ).button
-  );
-
-  // Notify provider
-  if (errand.providerId?.email) {
-    await sendTemplateEmail(
-      errand.providerId.email,
-      errandTemplates.errandCompletedProvider(
-        errand.providerId.fullName,
-        errand.errandId,
-        errand.customerId.fullName
-      ).subject,
-      errandTemplates.errandCompletedProvider(
-        errand.providerId.fullName,
-        errand.errandId,
-        errand.customerId.fullName
-      ).title,
-      errandTemplates.errandCompletedProvider(
-        errand.providerId.fullName,
-        errand.errandId,
-        errand.customerId.fullName
-      ).content,
-      errandTemplates.errandCompletedProvider(
-        errand.providerId.fullName,
-        errand.errandId,
-        errand.customerId.fullName
-      ).button
-    );
-  }
-}
-
-// In updateErrandStatus - when status is 'cancelled'
-if (status === 'cancelled') {
-  const recipientId = isCustomer ? errand.providerId?._id : errand.customerId._id;
-  if (recipientId) {
-    const recipient = await User.findById(recipientId);
-    await sendTemplateEmail(
-      recipient.email,
-      errandTemplates.errandCancelled(
-        recipient.fullName,
-        errand.errandId,
-        req.body.reason || 'No reason provided'
-      ).subject,
-      errandTemplates.errandCancelled(
-        recipient.fullName,
-        errand.errandId,
-        req.body.reason || 'No reason provided'
-      ).title,
-      errandTemplates.errandCancelled(
-        recipient.fullName,
-        errand.errandId,
-        req.body.reason || 'No reason provided'
-      ).content,
-      errandTemplates.errandCancelled(
-        recipient.fullName,
-        errand.errandId,
-        req.body.reason || 'No reason provided'
-      ).button
-    );
-  }
-}
-
     res.json({
       message: `Errand ${status} successfully`,
       errand,
+      ...(status === 'completed' && { fundsReleased: true }),
     });
 
   } catch (error) {
@@ -785,15 +801,15 @@ exports.acceptErrand = async (req, res) => {
   try {
     const errand = await Errand.findById(req.params.id);
     if (!errand) {
-      return res.status(404).json({ message: 'Errand not found' });
+      return res.status(404).json({ message: "Errand not found" });
     }
 
-    if (errand.status !== 'pending') {
-      return res.status(400).json({ message: 'Errand is not available' });
+    if (errand.status !== "pending") {
+      return res.status(400).json({ message: "Errand is not available" });
     }
 
     errand.providerId = req.user._id;
-    errand.status = 'accepted';
+    errand.status = "accepted";
     errand.acceptedAt = new Date();
 
     await errand.save();
@@ -801,15 +817,15 @@ exports.acceptErrand = async (req, res) => {
     // Notify customer
     const notification = new Notification({
       userId: errand.customerId,
-      type: 'booking_accepted',
-      title: 'Errand Accepted',
+      type: "booking_accepted",
+      title: "Errand Accepted",
       message: `${req.user.fullName} has accepted your errand`,
       data: { errandId: errand._id },
     });
     await notification.save();
 
     res.json({
-      message: 'Errand accepted successfully',
+      message: "Errand accepted successfully",
       errand,
     });
   } catch (error) {
@@ -819,16 +835,15 @@ exports.acceptErrand = async (req, res) => {
 
 // Update errand status
 
-
 // Get errand by ID
 exports.getErrandById = async (req, res) => {
   try {
     const errand = await Errand.findById(req.params.id)
-      .populate('customerId', 'fullName email phoneNumber address')
-      .populate('providerId', 'fullName email phoneNumber address');
+      .populate("customerId", "fullName email phoneNumber address")
+      .populate("providerId", "fullName email phoneNumber address");
 
     if (!errand) {
-      return res.status(404).json({ message: 'Errand not found' });
+      return res.status(404).json({ message: "Errand not found" });
     }
 
     res.json(errand);
@@ -842,28 +857,36 @@ exports.getErrandsByStatus = async (req, res) => {
     const { status } = req.params;
     let query = { status };
 
-    if (req.user.role === 'customer') {
+    if (req.user.role === "customer") {
       query.customerId = req.user._id;
-    } else if (req.user.role === 'errand_runner') {
+    } else if (req.user.role === "errand_runner") {
       query.providerId = req.user._id;
-    } else if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Access denied' });
+    } else if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Access denied" });
     }
 
     // Validate status
-    const validStatuses = ['pending', 'accepted', 'en_route', 'collected', 'delivered', 'completed', 'cancelled'];
+    const validStatuses = [
+      "pending",
+      "accepted",
+      "en_route",
+      "collected",
+      "delivered",
+      "completed",
+      "cancelled",
+    ];
     if (!validStatuses.includes(status)) {
-      return res.status(400).json({ message: 'Invalid status' });
+      return res.status(400).json({ message: "Invalid status" });
     }
 
     const errands = await Errand.find(query)
-      .populate('customerId', 'fullName email phoneNumber')
-      .populate('providerId', 'fullName email phoneNumber')
+      .populate("customerId", "fullName email phoneNumber")
+      .populate("providerId", "fullName email phoneNumber")
       .sort({ createdAt: -1 });
 
     res.json(errands);
   } catch (error) {
-    console.error('Get errands by status error:', error);
+    console.error("Get errands by status error:", error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -874,35 +897,40 @@ exports.getErrandStats = async (req, res) => {
     const userRole = req.user.role;
 
     let query = {};
-    if (userRole === 'customer') {
+    if (userRole === "customer") {
       query.customerId = userId;
-    } else if (userRole === 'errand_runner') {
+    } else if (userRole === "errand_runner") {
       query.providerId = userId;
     }
 
     const stats = {
       total: await Errand.countDocuments(query),
-      pending: await Errand.countDocuments({ ...query, status: 'pending' }),
-      accepted: await Errand.countDocuments({ ...query, status: 'accepted' }),
-      enRoute: await Errand.countDocuments({ ...query, status: 'en_route' }),
-      collected: await Errand.countDocuments({ ...query, status: 'collected' }),
-      delivered: await Errand.countDocuments({ ...query, status: 'delivered' }),
-      completed: await Errand.countDocuments({ ...query, status: 'completed' }),
-      cancelled: await Errand.countDocuments({ ...query, status: 'cancelled' }),
+      pending: await Errand.countDocuments({ ...query, status: "pending" }),
+      accepted: await Errand.countDocuments({ ...query, status: "accepted" }),
+      enRoute: await Errand.countDocuments({ ...query, status: "en_route" }),
+      collected: await Errand.countDocuments({ ...query, status: "collected" }),
+      delivered: await Errand.countDocuments({ ...query, status: "delivered" }),
+      completed: await Errand.countDocuments({ ...query, status: "completed" }),
+      cancelled: await Errand.countDocuments({ ...query, status: "cancelled" }),
     };
 
     // Get total earnings for errand runner
-    if (userRole === 'errand_runner') {
+    if (userRole === "errand_runner") {
       const earnings = await Errand.aggregate([
-        { $match: { providerId: userId, status: { $in: ['delivered', 'completed'] } } },
-        { $group: { _id: null, total: { $sum: '$providerAmount' } } },
+        {
+          $match: {
+            providerId: userId,
+            status: { $in: ["delivered", "completed"] },
+          },
+        },
+        { $group: { _id: null, total: { $sum: "$providerAmount" } } },
       ]);
       stats.totalEarnings = earnings[0]?.total || 0;
     }
 
     res.json(stats);
   } catch (error) {
-    console.error('Get errand stats error:', error);
+    console.error("Get errand stats error:", error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -912,13 +940,13 @@ async function geocodeAddress(address) {
   try {
     const response = await fetch(
       `https://nominatim.openstreetmap.org/search?` +
-      `q=${encodeURIComponent(address)}&` +
-      `format=json&` +
-      `limit=1&` +
-      `countrycodes=gb&` +
-      `accept-language=en`
+        `q=${encodeURIComponent(address)}&` +
+        `format=json&` +
+        `limit=1&` +
+        `countrycodes=gb&` +
+        `accept-language=en`
     );
-    
+
     if (response.ok) {
       const data = await response.json();
       if (data && data.length > 0) {
@@ -929,7 +957,7 @@ async function geocodeAddress(address) {
       }
     }
   } catch (e) {
-    console.warn('Geocoding failed:', e.message);
+    console.warn("Geocoding failed:", e.message);
   }
   return null;
 }

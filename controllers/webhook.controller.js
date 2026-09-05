@@ -4,8 +4,10 @@ const Payment = require("../models/Payment.model");
 const Transaction = require("../models/Transaction.model");
 const Errand = require("../models/Errand.model");
 const User = require("../models/User.model");
+const Wallet = require("../models/Wallet.model");
 const createNotification = require("../utils/create-notification");
 const ConnectionModel = require("../models/Connection.model");
+const { sendTemplateEmail, paymentTemplates } = require('../utils/email-templates');
 
 /**
  * Unified Stripe Webhook Handler
@@ -114,14 +116,12 @@ async function handleSubscriptionCreated(subscription) {
     return;
   }
 
-  // ✅ FIX: Safely extract date values with fallbacks
   const startSeconds =
     subscription.current_period_start ||
     subscription.start_date ||
     subscription.created;
   const endSeconds = subscription.current_period_end || subscription.trial_end;
 
-  // ✅ FIX: Only set dates if values exist
   if (startSeconds) {
     subscriptionRecord.currentPeriodStart = new Date(startSeconds * 1000);
   }
@@ -152,11 +152,9 @@ async function handleSubscriptionUpdated(subscription) {
     return;
   }
 
-  // ✅ FIX: Safely extract and validate date values
   const startSeconds = subscription.current_period_start;
   const endSeconds = subscription.current_period_end;
 
-  // ✅ FIX: Only update dates if they exist and are valid numbers
   if (
     startSeconds &&
     typeof startSeconds === "number" &&
@@ -171,14 +169,12 @@ async function handleSubscriptionUpdated(subscription) {
 
   const previousStatus = subscriptionRecord.status;
 
-  // Update status and other fields
   subscriptionRecord.status = subscription.status;
   subscriptionRecord.cancelAtPeriodEnd = !!subscription.cancel_at_period_end;
 
   await subscriptionRecord.save();
   console.log("✅ Subscription status sync complete:", subscriptionRecord._id);
 
-  // If status changed to canceled, update user
   if (subscription.status === "canceled" && previousStatus !== "canceled") {
     await User.findByIdAndUpdate(subscriptionRecord.userId, {
       "subscription.isSubscribed": false,
@@ -243,7 +239,6 @@ async function handleInvoicePaymentSucceeded(invoice) {
     return;
   }
 
-  // If status was trialing, activate it
   if (subscriptionRecord.status === "trialing") {
     subscriptionRecord.status = "active";
     await subscriptionRecord.save();
@@ -294,8 +289,247 @@ async function handleInvoicePaymentFailed(invoice) {
 }
 
 // ============================================================
-// PAYMENT HANDLERS
+// PAYMENT HANDLERS - UPDATED FOR ERRAND PAYMENTS
 // ============================================================
+
+/**
+ * Handle payment_intent.succeeded - NOW HANDLES BOTH CONNECTION FEE AND ERRAND PAYMENTS
+ */
+async function handlePaymentIntentSucceeded(paymentIntent) {
+  console.log("💰 Payment intent succeeded:", paymentIntent.id);
+
+  const metadata = paymentIntent.metadata || {};
+  const { paymentId, type, errandId } = metadata;
+
+  if (!paymentId) {
+    console.log("⚠️ No paymentId in metadata");
+    return;
+  }
+
+  // Find the payment record
+  let payment = await Payment.findById(paymentId);
+  if (!payment) {
+    console.log("⚠️ Payment record not found for intent:", paymentIntent.id);
+    return;
+  }
+
+  // Check if already processed
+  if (payment.status === "succeeded") {
+    console.log("✅ Payment already processed:", paymentId);
+    return;
+  }
+
+  // Update payment status
+  payment.status = "succeeded";
+  payment.stripePaymentIntentId = paymentIntent.id;
+  payment.paymentDate = new Date();
+  await payment.save();
+
+  // ============================================================
+  // HANDLE CONNECTION FEE PAYMENT
+  // ============================================================
+  if (type === "connection_fee") {
+    // Update user
+    await User.findByIdAndUpdate(payment.customerId, {
+      hasPaidConnectionFee: true,
+      connectionFeePaidAt: new Date(),
+      connectionFeePaymentId: payment._id,
+    });
+
+    const connection = await ConnectionModel.findOne({
+      userId: payment.customerId,
+    });
+
+    // Send notification
+    await createNotification(
+      payment.customerId,
+      "connection_fee_paid",
+      "✅ Connection Fee Paid",
+      `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}.`,
+      {
+        paymentId: payment._id,
+        connectionId: connection?._id,
+        amount: payment.amount,
+      }
+    );
+
+    console.log("✅ Connection fee payment processed via webhook:", paymentId);
+    return;
+  }
+
+  // ============================================================
+  // HANDLE ERRAND PAYMENT
+  // ============================================================
+  if (type === "errand" || errandId) {
+    const errand = await Errand.findById(errandId || payment.errandId);
+    if (errand) {
+      // Update errand payment status
+      errand.paymentStatus = "paid";
+      errand.paymentId = payment._id;
+      errand.paymentIntentId = paymentIntent.id;
+      await errand.save();
+
+      // Create transaction record
+      const transaction = new Transaction({
+        userId: payment.customerId,
+        type: "payment",
+        amount: -payment.amount,
+        status: "completed",
+        description: `Payment for errand #${errand.errandId}`,
+        reference: paymentIntent.id,
+        stripeTransactionId: paymentIntent.id,
+        metadata: {
+          paymentId: payment._id,
+          errandId: errand._id,
+        },
+        completedAt: new Date(),
+      });
+      await transaction.save();
+
+      // Send email to customer
+      const customer = await User.findById(payment.customerId);
+      if (customer) {
+        await sendTemplateEmail(
+          customer.email,
+          paymentTemplates.paymentSuccessful(
+            customer.fullName,
+            payment.amount,
+            errand.serviceType || "Errand",
+            paymentIntent.id
+          ).subject,
+          paymentTemplates.paymentSuccessful(
+            customer.fullName,
+            payment.amount,
+            errand.serviceType || "Errand",
+            paymentIntent.id
+          ).title,
+          paymentTemplates.paymentSuccessful(
+            customer.fullName,
+            payment.amount,
+            errand.serviceType || "Errand",
+            paymentIntent.id
+          ).content,
+          paymentTemplates.paymentSuccessful(
+            customer.fullName,
+            payment.amount,
+            errand.serviceType || "Errand",
+            paymentIntent.id
+          ).button
+        );
+      }
+
+      // Notify customer
+      await createNotification(
+        payment.customerId,
+        "payment_successful",
+        "💰 Payment Successful",
+        `Your payment of £${payment.amount.toFixed(2)} for errand #${errand.errandId} has been confirmed.`,
+        {
+          paymentId: payment._id,
+          errandId: errand._id,
+          amount: payment.amount,
+        }
+      );
+
+      // Find and notify nearby providers that payment is now confirmed
+      const providers = await User.find({
+        role: "provider",
+        isActive: true,
+        isAvailable: true,
+        verificationStatus: "approved",
+      }).limit(20);
+
+      // Notify providers via socket
+      const io = req.app?.get('io');
+      if (io) {
+        for (const provider of providers) {
+          // Check if this provider was matched to this errand
+          const isMatched = errand.matchedProviders?.some(
+            mp => mp.providerId.toString() === provider._id.toString()
+          );
+          
+          if (isMatched) {
+            io.to(`user_${provider._id}`).emit('payment-confirmed', {
+              errandId: errand._id,
+              errandId: errand.errandId,
+              amount: payment.amount,
+            });
+          }
+        }
+      }
+
+      // Notify providers via notification
+      for (const provider of providers) {
+        const isMatched = errand.matchedProviders?.some(
+          mp => mp.providerId.toString() === provider._id.toString()
+        );
+        
+        if (isMatched) {
+          await createNotification(
+            provider._id,
+            "payment_confirmed",
+            "💰 Payment Confirmed",
+            `Payment confirmed for errand #${errand.errandId}. You can now accept this job.`,
+            {
+              errandId: errand._id,
+              amount: payment.amount,
+            }
+          );
+        }
+      }
+
+      console.log("✅ Errand payment processed via webhook:", paymentId);
+    }
+  }
+}
+
+/**
+ * Handle payment_intent.payment_failed - UPDATED FOR ERRAND PAYMENTS
+ */
+async function handlePaymentIntentFailed(paymentIntent) {
+  console.log("❌ Payment failed:", paymentIntent.id);
+
+  const metadata = paymentIntent.metadata || {};
+  const { paymentId, type } = metadata;
+
+  if (!paymentId) {
+    console.log("⚠️ No paymentId in metadata");
+    return;
+  }
+
+  const payment = await Payment.findById(paymentId);
+  if (!payment) {
+    console.log("⚠️ Payment record not found for intent:", paymentIntent.id);
+    return;
+  }
+
+  payment.status = "failed";
+  payment.failedReason =
+    paymentIntent.last_payment_error?.message || "Payment failed";
+  await payment.save();
+
+  // Notify user
+  let notificationMessage = `Your payment of £${payment.amount.toFixed(2)} failed. Please try again.`;
+  
+  if (payment.type === "connection_fee") {
+    notificationMessage = `Your connection fee payment of £${payment.amount.toFixed(2)} failed. Please try again.`;
+  } else {
+    notificationMessage = `Your payment of £${payment.amount.toFixed(2)} for errand failed. Please try again.`;
+  }
+
+  await createNotification(
+    payment.customerId,
+    "payment_failed",
+    "❌ Payment Failed",
+    notificationMessage,
+    {
+      paymentId: payment._id,
+      error: payment.failedReason,
+    }
+  );
+
+  console.log("⚠️ Payment marked as failed:", paymentId);
+}
 
 async function handleChargeRefunded(charge) {
   console.log("🔄 Charge refunded:", charge.id);
@@ -344,10 +578,12 @@ async function handleChargeRefunded(charge) {
   console.log("✅ Refund processed:", payment._id);
 }
 
-// dkjfkdafd
+// ============================================================
+// CHECKOUT SESSION HANDLER - For Connection Fee
+// ============================================================
 
 async function handleCheckoutSessionCompleted(session) {
-  console.log("💰 Checkout session completed:");
+  console.log("💰 Checkout session completed:", session.id);
 
   const metadata = session.metadata || {};
   const { paymentId, userId, type } = metadata;
@@ -356,12 +592,6 @@ async function handleCheckoutSessionCompleted(session) {
   if (!user) {
     return console.log("User is not found");
   }
-
-  // Only process connection fee payments
-  // if (type !== 'connection_fee') {
-  //   console.log('📦 Not a connection fee payment, skipping...');
-  //   return;
-  // }
 
   if (!paymentId || !userId) {
     console.error("❌ Missing paymentId or userId in metadata");
@@ -393,36 +623,6 @@ async function handleCheckoutSessionCompleted(session) {
   payment.paymentDate = new Date();
   await payment.save();
 
-  // Create virtual connection record
-  // const connection = new ConnectionModel({
-  //   userId: userId,
-  //   fullName: user.fullName || 'user',
-  //   email: user.email || '',
-  //   phoneNumber: user.phoneNumber,
-  //   location: {
-  //     type: 'Point',
-  //     coordinates: user.location?.coordinates || [0, 0],
-  //     address: user.address,
-  //     town: '',
-  //     postcode: '',
-  //   },
-  //   purpose: 'payment_only',
-  //   status: 'completed',
-  //   fee: {
-  //     amount: payment.amount,
-  //     currency: 'GBP',
-  //     paid: true,
-  //     paymentId: payment._id,
-  //     paidAt: new Date(),
-  //   },
-  //   userHasPaidConnectionFee: true,
-  //   userPaymentId: payment._id,
-  //   userPaymentDate: new Date(),
-  //   isActive: false,
-  //   expiresAt: new Date(),
-  // });
-  // await connection.save();
-
   // Update user
   await User.findByIdAndUpdate(userId, {
     hasPaidConnectionFee: true,
@@ -434,167 +634,18 @@ async function handleCheckoutSessionCompleted(session) {
     userId: userId,
   });
 
-
-
   // Send notification to user
   await createNotification(
     userId,
     "connection_fee_paid",
     "✅ Connection Fee Paid",
-    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(
-      2
-    )}. You can now create unlimited connections.`,
+    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}. You can now create unlimited connections.`,
     {
       paymentId: payment._id,
-      ...(connection && {connectionId: connection._id}),
+      ...(connection && { connectionId: connection._id }),
       amount: payment.amount,
     }
   );
 
   console.log("✅ Connection fee payment processed:", paymentId);
-}
-
-/**
- * Handle payment_intent.succeeded for connection fee
- */
-async function handlePaymentIntentSucceeded(paymentIntent) {
-  console.log("💰 Payment intent succeeded:");
-
-  const metadata = paymentIntent.metadata || {};
-  const { paymentId, type } = metadata;
-
-  // Only process connection fee payments
-  // if (type !== 'connection_fee') {
-  //   // Skip - this might be a regular booking payment
-  //   // Your existing booking payment logic will handle it
-  //   return;
-  // }
-
-  if (!paymentId) {
-    console.log("⚠️ No paymentId in metadata for connection fee");
-    return;
-  }
-
-  // Find the payment record
-  let payment = await Payment.findById(paymentId);
-  if (!payment) {
-    console.log("⚠️ Payment record not found for intent:", paymentIntent.id);
-    return;
-  }
-
-  // Check if already processed
-  if (payment.status === "succeeded") {
-    console.log("✅ Payment already processed:", paymentId);
-    return;
-  }
-
-  // Update payment
-  payment.status = "succeeded";
-  payment.stripePaymentIntentId = paymentIntent.id;
-  payment.paymentDate = new Date();
-  await payment.save();
-
-  // Create virtual connection record
-  // const connection = new Connection({
-  //   userId: payment.customerId,
-  //   fullName: metadata.userName || 'User',
-  //   email: metadata.userEmail || '',
-  //   phoneNumber: '',
-  //   location: {
-  //     type: 'Point',
-  //     coordinates: [0, 0],
-  //     address: '',
-  //     town: '',
-  //     postcode: '',
-  //   },
-  //   purpose: 'payment_only',
-  //   status: 'completed',
-  //   fee: {
-  //     amount: payment.amount,
-  //     currency: 'GBP',
-  //     paid: true,
-  //     paymentId: payment._id,
-  //     paidAt: new Date(),
-  //   },
-  //   userHasPaidConnectionFee: true,
-  //   userPaymentId: payment._id,
-  //   userPaymentDate: new Date(),
-  //   isActive: false,
-  //   expiresAt: new Date(),
-  // });
-  // await connection.save();
-
-  // Update user
-  await User.findByIdAndUpdate(payment.customerId, {
-    hasPaidConnectionFee: true,
-    connectionFeePaidAt: new Date(),
-    connectionFeePaymentId: payment._id,
-  });
-
-  const connection = await ConnectionModel.findOne({
-    userId: payment.customerId,
-  });
-  // Send notification
-  await createNotification(
-    payment.customerId,
-    "connection_fee_paid",
-    "✅ Connection Fee Paid",
-    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(
-      2
-    )}.`,
-    {
-      paymentId: payment._id,
-      connectionId: connection._id,
-      amount: payment.amount,
-    }
-  );
-
-  console.log("✅ Connection fee payment processed via webhook:", paymentId);
-}
-
-/**
- * Handle payment_intent.payment_failed for connection fee
- */
-async function handlePaymentIntentFailed(paymentIntent) {
-  console.log("❌ Payment failed:", paymentIntent.id);
-
-  const metadata = paymentIntent.metadata || {};
-  const { paymentId, type } = metadata;
-
-  // Only process connection fee payments
-  // if (type !== 'connection_fee') {
-  //   return;
-  // }
-
-  if (!paymentId) {
-    console.log("⚠️ No paymentId in metadata for connection fee");
-    return;
-  }
-
-  const payment = await Payment.findById(paymentId);
-  if (!payment) {
-    console.log("⚠️ Payment record not found for intent:", paymentIntent.id);
-    return;
-  }
-
-  payment.status = "failed";
-  payment.failedReason =
-    paymentIntent.last_payment_error?.message || "Payment failed";
-  await payment.save();
-
-  // Notify user
-  await createNotification(
-    payment.customerId,
-    "payment_failed",
-    "❌ Payment Failed",
-    `Your connection fee payment of £${payment.amount.toFixed(
-      2
-    )} failed. Please try again.`,
-    {
-      paymentId: payment._id,
-      error: payment.failedReason,
-    }
-  );
-
-  console.log("⚠️ Connection fee payment marked as failed:", paymentId);
 }

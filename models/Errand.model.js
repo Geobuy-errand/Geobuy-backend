@@ -74,6 +74,7 @@ const errandSchema = new mongoose.Schema(
         "collected",
         "delivered",
         "cancelled",
+        "completed"
       ],
       default: "pending",
     },
