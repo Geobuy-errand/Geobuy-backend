@@ -17,7 +17,7 @@ const {
 exports.createErrand = async (req, res) => {
   try {
     const {
-      serviceType,
+      // serviceType,
       pickup,
       dropoff,
       taskDetails,
@@ -196,7 +196,7 @@ exports.createErrand = async (req, res) => {
 
     const errand = new Errand({
       customerId: req.user._id,
-      serviceType,
+      // serviceType,
       pickup: {
         ...pickup,
         formattedAddress: pickup.address,
@@ -290,12 +290,12 @@ exports.createErrand = async (req, res) => {
             userId: provider._id,
             type: "booking_created",
             title: "New Errand Available",
-            message: `New ${serviceType} errand available ${provider.distanceText} from you`,
+            message: `New errand available ${provider.distanceText} from you`,
             data: {
               errandId: errand._id,
               distance: provider.distanceText,
               duration: provider.durationText,
-              serviceType,
+              // serviceType,
               estimatedPrice: total,
             },
           });
@@ -307,7 +307,7 @@ exports.createErrand = async (req, res) => {
             if (io) {
               io.to(`user_${provider._id}`).emit("new-errand-available", {
                 errandId: errand._id,
-                serviceType,
+                // serviceType,
                 distance: provider.distanceText,
                 duration: provider.durationText,
                 pickup: pickup.address,
@@ -510,25 +510,25 @@ exports.acceptErrand = async (req, res) => {
       errandTemplates.youAcceptedErrand(
         req.user.fullName,
         errand.errandId,
-        errand.serviceType,
+        'Errand runs',
         errand.pickup?.address || "Pickup location"
       ).subject,
       errandTemplates.youAcceptedErrand(
         req.user.fullName,
         errand.errandId,
-        errand.serviceType,
+        'Errand runs',
         errand.pickup?.address || "Pickup location"
       ).title,
       errandTemplates.youAcceptedErrand(
         req.user.fullName,
         errand.errandId,
-        errand.serviceType,
+        'Errand runs',
         errand.pickup?.address || "Pickup location"
       ).content,
       errandTemplates.youAcceptedErrand(
         req.user.fullName,
         errand.errandId,
-        errand.serviceType,
+        'Errand runs',
         errand.pickup?.address || "Pickup location"
       ).button
     );
@@ -748,7 +748,7 @@ exports.updateErrandStatus = async (req, res) => {
         timestamp: new Date(),
         errand: {
           errandId: errand.errandId,
-          serviceType: errand.serviceType,
+          // serviceType: errand.serviceType,
           pickup: errand.pickup,
           dropoff: errand.dropoff,
           total: errand.total,

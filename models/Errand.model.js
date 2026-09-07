@@ -29,7 +29,7 @@ const errandSchema = new mongoose.Schema(
       //   "food_pickup",
       //   "custom",
       // ],
-      required: true,
+      // required: true,
     },
     pickup: {
       address: String,

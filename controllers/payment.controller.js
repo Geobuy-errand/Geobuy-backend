@@ -22,7 +22,7 @@ exports.createPaymentIntent = async (req, res) => {
   try {
     const { errandId, bookingId } = req.body;
     
-    let errand, booking, amount, providerId, customerId, serviceType;
+    let errand, booking, amount, providerId, customerId;
 
     if (errandId) {
       errand = await Errand.findById(errandId);
@@ -32,7 +32,7 @@ exports.createPaymentIntent = async (req, res) => {
       amount = errand.total;
       providerId = errand.providerId;
       customerId = errand.customerId;
-      serviceType = errand.serviceType;
+      // serviceType = errand.serviceType;
     } else if (bookingId) {
       booking = await Booking.findById(bookingId);
       if (!booking) {
@@ -41,7 +41,7 @@ exports.createPaymentIntent = async (req, res) => {
       amount = booking.estimatedPrice;
       providerId = booking.providerId;
       customerId = booking.customerId;
-      serviceType = booking.serviceType;
+      // serviceType = booking.serviceType;
     } else {
       return res.status(400).json({ message: 'Either errandId or bookingId is required' });
     }
@@ -81,7 +81,7 @@ exports.createPaymentIntent = async (req, res) => {
       status: 'pending',
       isEscrow: true,
       metadata: {
-        serviceType: serviceType,
+        // serviceType: serviceType,
         errandDetails: errand ? {
           pickup: errand.pickup?.address,
           dropoff: errand.dropoff?.address,
@@ -622,7 +622,7 @@ exports.confirmPayment = async (req, res) => {
       type: 'payment',
       amount: -payment.amount,
       status: 'completed',
-      description: `Payment for ${payment.metadata?.serviceType || 'service'}`,
+      description: 'Payment for Errand runs',
       reference: payment.paymentIntentId,
       completedAt: new Date(),
     });
@@ -689,25 +689,25 @@ exports.confirmPayment = async (req, res) => {
       paymentTemplates.paymentSuccessful(
         user.fullName,
         payment.amount,
-        payment.metadata?.serviceType || 'Service',
+        'Errand runs',
         payment.paymentIntentId
       ).subject,
       paymentTemplates.paymentSuccessful(
         user.fullName,
         payment.amount,
-        payment.metadata?.serviceType || 'Service',
+        'Errand runs',
         payment.paymentIntentId
       ).title,
       paymentTemplates.paymentSuccessful(
         user.fullName,
         payment.amount,
-        payment.metadata?.serviceType || 'Service',
+        'Errand runs',
         payment.paymentIntentId
       ).content,
       paymentTemplates.paymentSuccessful(
         user.fullName,
         payment.amount,
-        payment.metadata?.serviceType || 'Service',
+        'Errand runs',
         payment.paymentIntentId
       ).button
     );
@@ -1181,7 +1181,7 @@ exports.getMyPayments = async (req, res) => {
       : { providerId: req.user._id };
 
     const payments = await Payment.find(query)
-      .populate('bookingId', 'bookingId serviceType date status')
+      .populate('bookingId', 'bookingId date status')
       .sort({ createdAt: -1 });
 
     res.json(payments);

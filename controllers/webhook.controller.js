@@ -394,25 +394,25 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
           paymentTemplates.paymentSuccessful(
             customer.fullName,
             payment.amount,
-            errand.serviceType || "Errand",
+            "Errand runs",
             paymentIntent.id
           ).subject,
           paymentTemplates.paymentSuccessful(
             customer.fullName,
             payment.amount,
-            errand.serviceType || "Errand",
+            "Errand runs",
             paymentIntent.id
           ).title,
           paymentTemplates.paymentSuccessful(
             customer.fullName,
             payment.amount,
-            errand.serviceType || "Errand",
+            "Errand runs",
             paymentIntent.id
           ).content,
           paymentTemplates.paymentSuccessful(
             customer.fullName,
             payment.amount,
-            errand.serviceType || "Errand",
+            "Errand runs",
             paymentIntent.id
           ).button
         );

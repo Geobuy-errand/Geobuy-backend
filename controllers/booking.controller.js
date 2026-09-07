@@ -88,7 +88,7 @@ exports.getErrandById = async (req, res) => {
 exports.createErrand = async (req, res) => {
   try {
     const {
-      serviceType,
+      // serviceType,
       pickup,
       dropoff,
       taskDetails,
@@ -206,7 +206,7 @@ exports.createErrand = async (req, res) => {
     
     const errand = new Errand({
       customerId: req.user._id,
-      serviceType,
+      // serviceType,
       pickup: {
         ...pickup,
         formattedAddress: pickupValidation.formattedAddress,
@@ -309,13 +309,13 @@ exports.createErrand = async (req, res) => {
           type: 'booking_created',
           title: nearbyProviders.length > 0 ? 'New Errand Available Nearby!' : 'New Errand Available',
           message: nearbyProviders.length > 0 
-            ? `New ${serviceType} errand available ${provider.distanceText} from you` 
-            : `New ${serviceType} errand available (${provider.distanceText} away)`,
+            ? `New errand available ${provider.distanceText} from you` 
+            : `New errand available (${provider.distanceText} away)`,
           data: { 
             errandId: errand._id, 
             distance: provider.distanceText,
             duration: provider.durationText,
-            serviceType,
+            // serviceType,
             isNearby: nearbyProviders.length > 0,
           },
         });
@@ -327,7 +327,7 @@ exports.createErrand = async (req, res) => {
           if (io) {
             io.to(`user_${provider._id}`).emit('new-errand-available', {
               errandId: errand._id,
-              serviceType,
+              // serviceType,
               distance: provider.distanceText,
               duration: provider.durationText,
               pickup: pickup.address,
@@ -606,7 +606,7 @@ exports.updateErrandStatus = async (req, res) => {
         timestamp: new Date(),
         errand: {
           errandId: errand.errandId,
-          serviceType: errand.serviceType,
+          // serviceType: errand.serviceType,
           pickup: errand.pickup,
           dropoff: errand.dropoff,
           total: errand.total,

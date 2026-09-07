@@ -16,18 +16,42 @@ const connectionSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    venue: {
+      name: {
+        type: String,
+        default: '',
+      },
+      address: {
+        type: String,
+        default: '',
+      },
+      postcode: {
+        type: String,
+        default: '',
+      },
+      googleMapsUrl: {
+        type: String,
+        default: '',
+      },
+    },
     // ✅ UK State - dropdown instead of free text
     state: {
       type: String,
       required: true,
       enum: [
+        // Regions
         'England', 'Scotland', 'Wales', 'Northern Ireland',
+        // Major Cities
         'London', 'Manchester', 'Birmingham', 'Liverpool',
         'Bristol', 'Sheffield', 'Leeds', 'Newcastle',
         'Nottingham', 'Southampton', 'Brighton', 'Oxford',
         'Cambridge', 'York', 'Bath', 'Edinburgh', 'Glasgow',
         'Aberdeen', 'Dundee', 'Cardiff', 'Swansea', 'Belfast',
-        'Derry', 'All UK'
+        'Derry', 'Reading', 'Leicester', 'Coventry', 'Stoke',
+        'Wolverhampton', 'Plymouth', 'Exeter', 'Bournemouth',
+        'Portsmouth', 'Norwich', 'Peterborough', 'Chelmsford',
+        'Colchester', 'St Albans', 'All UK'
       ],
     },
     fullName: {
