@@ -2,7 +2,11 @@ const Connection = require('../models/Connection.model');
 const User = require('../models/User.model');
 const Payment = require('../models/Payment.model');
 const Settings = require('../models/Setting.model');
-const createNotification = require('../utils/create-notification')
+const createNotification = require('../utils/create-notification');
+const pricingService = require('../services/pricingService');
+const { countryOfUser } = require('../config/countries');
+const { formatMoney } = require('../utils/money');
+const { NG_REGIONS, UK_REGIONS, canonicalRegion } = require('../config/locations');
 const { sendTemplateEmail, connectionTemplates } = require('../utils/email-templates');
 
 
@@ -125,7 +129,7 @@ exports.payConnectionFee = async (req, res) => {
         req.user._id,
         'connection_fee_paid',
         '✅ Connection Fee Paid',
-        `You have successfully paid the one-time connection fee of £${CONNECTION_FEE}. You can now create unlimited connections.`,
+        `You have successfully paid the one-time connection fee of ${formatMoney(CONNECTION_FEE, 'GBP')}. You can now create unlimited connections.`,
         {
           paymentId: payment._id,
           amount: CONNECTION_FEE,
@@ -218,13 +222,14 @@ exports.createConnection = async (req, res) => {
           });
         }
   
-        const settings = await Settings.getSettings();
-        const CONNECTION_FEE = settings.pricing?.connectionFee || 1.99;
+        const feePricing = await pricingService.getPricing(countryOfUser(req.user));
+        const CONNECTION_FEE = feePricing.connectionFee;
   
         return res.status(402).json({
-          message: `Please pay the one-time connection fee of £${CONNECTION_FEE} to create connections.`,
+          message: `Please pay the one-time connection fee of ${formatMoney(CONNECTION_FEE, feePricing.currency)} to create connections.`,
           requiresPayment: true,
           fee: CONNECTION_FEE,
+          currency: feePricing.currency,
         });
       }
   
@@ -232,6 +237,14 @@ exports.createConnection = async (req, res) => {
       if (purpose === 'other' && !customPurpose) {
         return res.status(400).json({
           message: 'Please specify your purpose when selecting "Other"',
+        });
+      }
+
+      const userCountry = countryOfUser(req.user);
+      const allowedRegions = userCountry === 'NG' ? NG_REGIONS : UK_REGIONS;
+      if (!allowedRegions.includes(canonicalRegion(state))) {
+        return res.status(400).json({
+          message: userCountry === 'NG' ? 'Please choose a Nigerian state' : 'Please choose a UK region or city',
         });
       }
   
@@ -275,10 +288,11 @@ exports.createConnection = async (req, res) => {
         meetingType: meetingType || 'virtual',
         connectionDate,
         state,
+        country: userCountry,
         connectionTime,
         fee: {
           amount: 0,
-          currency: 'GBP',
+          currency: userCountry === 'NG' ? 'NGN' : 'GBP',
           paid: true,
         },
         userHasPaidConnectionFee: true,
@@ -580,18 +594,22 @@ exports.rateConnection = async (req, res) => {
 // ============================================================
 exports.adminGetAllConnections = async (req, res) => {
   try {
-    const { status, purpose, limit = 20, page = 1, search } = req.query;
+    const { status, purpose, limit = 20, page = 1, search, state, country } = req.query;
     
     const query = {
       purpose: { $ne: 'payment_only' },
     };
     if (status) query.status = status;
     if (purpose) query.purpose = purpose;
+    // `state` was ignored before, so bulk-scheduling one city hit every connection
+    if (state) query.state = canonicalRegion(state);
+    if (country) query.country = String(country).toUpperCase();
     if (search) {
+      const safe = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       query.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { connectionId: { $regex: search, $options: 'i' } },
+        { fullName: { $regex: safe, $options: 'i' } },
+        { email: { $regex: safe, $options: 'i' } },
+        { connectionId: { $regex: safe, $options: 'i' } },
       ];
     }
 
@@ -706,11 +724,12 @@ exports.getConnectionStatus = async (req, res) => {
 
 exports.getConnectionFees = async (req, res) => {
   try {
-    const settings = await Settings.getSettings();
-    const CONNECTION_FEE = settings.pricing?.connectionFee || 1.99;
+    const pricing = await pricingService.getPricing(countryOfUser(req.user));
 
     res.json({
-      connectionFee: CONNECTION_FEE
+      connectionFee: pricing.connectionFee,
+      currency: pricing.currency,
+      formattedFee: formatMoney(pricing.connectionFee, pricing.currency),
     });
 
   } catch (error) {

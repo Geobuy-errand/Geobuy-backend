@@ -1,4 +1,5 @@
 const ConectionPost = require('../models/ConnectPost.model');
+const { NG_REGIONS, canonicalRegion } = require('../config/locations');
 const Connection = require('../models/Connection.model');
 const createNotification = require('../utils/create-notification');
 const { sendTemplateEmail, connectionTemplates } = require('../utils/email-templates');
@@ -8,11 +9,14 @@ const { sendTemplateEmail, connectionTemplates } = require('../utils/email-templ
 // ============================================================
 exports.getUserPosts = async (req, res) => {
   try {
-    // Get user's connection
-    const connection = await Connection.findOne({
-      userId: req.user._id,
-      userHasPaidConnectionFee: true,
-    });
+    // Get user's real connection (not the payment-tracking record)
+    const connection =
+      (await Connection.findOne({
+        userId: req.user._id,
+        userHasPaidConnectionFee: true,
+        purpose: { $ne: 'payment_only' },
+      }).sort({ createdAt: -1 })) ||
+      (await Connection.findOne({ userId: req.user._id, userHasPaidConnectionFee: true }));
 
     if (!connection) {
       return res.status(403).json({
@@ -21,12 +25,13 @@ exports.getUserPosts = async (req, res) => {
       });
     }
 
-    // Get posts for user's state + "All UK" posts
+    // Posts for the user's state/city + country-wide posts
+    const isNG = (connection.country || req.user.country) === 'NG';
     const query = {
       isActive: true,
       $or: [
         { state: connection.state },
-        { state: 'All UK' },
+        { state: isNG ? 'All Nigeria' : 'All UK' },
       ],
       expiresAt: { $gt: new Date() },
     };
@@ -69,11 +74,13 @@ exports.createPost = async (req, res) => {
       tags,
     } = req.body;
 
-    const post = new Post({
+    // `Post` was never defined here, so creating posts always crashed.
+    const post = new ConectionPost({
       title,
       content,
       type: type || 'general',
       state,
+      country: NG_REGIONS.includes(canonicalRegion(state)) ? 'NG' : 'GB',
       venue,
       date,
       time,
@@ -88,7 +95,7 @@ exports.createPost = async (req, res) => {
 
     // Notify connected users in this state
     const connectedUsers = await Connection.find({
-      state: state,
+      state: canonicalRegion(state),
       userHasPaidConnectionFee: true,
       status: 'active',
     }).select('userId');
@@ -154,7 +161,7 @@ exports.adminGetAllPosts = async (req, res) => {
     const { state, type, limit = 50, page = 1 } = req.query;
     
     const query = {};
-    if (state) query.state = state;
+    if (state) query.state = canonicalRegion(state);
     if (type) query.type = type;
 
     const posts = await ConectionPost.find(query)

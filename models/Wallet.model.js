@@ -26,6 +26,7 @@ const walletSchema = new mongoose.Schema(
     },
     currency: {
       type: String,
+      enum: ['GBP', 'NGN'],
       default: 'GBP',
     },
     isActive: {

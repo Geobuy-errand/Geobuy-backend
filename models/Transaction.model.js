@@ -22,6 +22,7 @@ const transactionSchema = new mongoose.Schema(
     },
     currency: {
       type: String,
+      enum: ['GBP', 'NGN'],
       default: 'GBP',
     },
     status: {
@@ -49,9 +50,9 @@ transactionSchema.pre('save', function (next) {
     const year = date.getFullYear().toString().slice(-2);
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
-    const random = Math.floor(Math.random() * 10000)
-      .toString()
-      .padStart(4, '0');
+    // The old 4-digit suffix caused duplicate-key errors once a day had a few
+    // dozen transactions.
+    const random = require('crypto').randomBytes(5).toString('hex').toUpperCase();
     this.transactionId = `TXN-${year}${month}${day}-${random}`;
   }
   next();

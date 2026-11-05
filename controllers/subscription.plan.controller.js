@@ -1,5 +1,37 @@
 const SubscriptionPlan = require('../models/SubscriptionPlan.model');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const paystack = require('../services/payments/paystack');
+
+const parseCountries = (countries, priceNGN, stripePriceId) => {
+  if (Array.isArray(countries) && countries.length) {
+    return [...new Set(countries.map((c) => String(c).toUpperCase()).filter((c) => ['GB', 'NG'].includes(c)))];
+  }
+  const out = [];
+  if (stripePriceId) out.push('GB');
+  if (Number(priceNGN) > 0) out.push('NG');
+  return out.length ? out : ['GB'];
+};
+
+/** Create or update the matching Paystack plan for the NGN price. */
+async function syncPaystackPlan(plan) {
+  if (!(plan.priceNGN > 0) || !paystack.isConfigured()) return;
+  if (plan.paystackPlanCode) {
+    await paystack.updatePlan(plan.paystackPlanCode, {
+      name: plan.name,
+      amount: plan.priceNGN,
+      interval: plan.interval,
+      description: plan.description,
+    });
+  } else {
+    const created = await paystack.createPlan({
+      name: plan.name,
+      amount: plan.priceNGN,
+      interval: plan.interval,
+      description: plan.description,
+    });
+    plan.paystackPlanCode = created.planCode;
+  }
+}
 
 // Get all active plans (public)
 exports.getActivePlans = async (req, res) => {
@@ -7,6 +39,11 @@ exports.getActivePlans = async (req, res) => {
     const plans = await SubscriptionPlan.find({ isActive: true })
       .sort({ displayOrder: 1, price: 1 });
 
+    // ?country=NG returns Nigeria plans with NGN prices
+    if (req.query.country) {
+      const { plansForCountry } = require('./subscription.controller');
+      return res.json(plansForCountry(plans, String(req.query.country).toUpperCase()));
+    }
     res.json(plans);
   } catch (error) {
     console.error('Get active plans error:', error);
@@ -56,6 +93,8 @@ exports.createPlan = async (req, res) => {
       interval,
       price,
       stripePriceId,
+      priceNGN,
+      countries,
       features,
       isActive,
       isPopular,
@@ -63,9 +102,13 @@ exports.createPlan = async (req, res) => {
       metadata,
     } = req.body;
 
-    // Validate required fields
-    if (!name || !stripePriceId || !price || !interval) {
-      return res.status(400).json({ message: 'Name, stripePriceId, price, and interval are required' });
+    // A plan needs a UK price (Stripe), a Nigeria price (NGN), or both.
+    const hasUK = Boolean(stripePriceId && Number(price) > 0);
+    const hasNG = Number(priceNGN) > 0;
+    if (!name || !interval || (!hasUK && !hasNG)) {
+      return res.status(400).json({
+        message: 'Name and interval are required, plus a UK price with Stripe price ID and/or a Nigeria price (NGN)',
+      });
     }
 
     // Validate interval
@@ -75,7 +118,7 @@ exports.createPlan = async (req, res) => {
 
     // Check if Stripe price ID exists
     try {
-      await stripe.prices.retrieve(stripePriceId);
+      if (stripePriceId) await stripe.prices.retrieve(stripePriceId);
     } catch (stripeError) {
       return res.status(400).json({ 
         message: 'Invalid Stripe price ID. Please verify the price exists in Stripe.',
@@ -87,8 +130,10 @@ exports.createPlan = async (req, res) => {
       name,
       description,
       interval,
-      price,
-      stripePriceId,
+      price: Number(price) || 0,
+      stripePriceId: stripePriceId || undefined,
+      priceNGN: hasNG ? Number(priceNGN) : undefined,
+      countries: parseCountries(countries, priceNGN, stripePriceId),
       features: features || {},
       isActive: isActive !== undefined ? isActive : true,
       isPopular: isPopular || false,
@@ -96,6 +141,12 @@ exports.createPlan = async (req, res) => {
       metadata: metadata || {},
       createdBy: req.user._id,
     });
+
+    try {
+      await syncPaystackPlan(plan);
+    } catch (e) {
+      return res.status(400).json({ message: `Could not create Paystack plan: ${e.message}` });
+    }
 
     await plan.save();
 
@@ -119,6 +170,8 @@ exports.updatePlan = async (req, res) => {
       interval,
       price,
       stripePriceId,
+      priceNGN,
+      countries,
       features,
       isActive,
       isPopular,
@@ -153,12 +206,26 @@ exports.updatePlan = async (req, res) => {
         });
       }
     }
-    if (features) plan.features = { ...plan.features, ...features };
+    let ngnChanged = false;
+    if (priceNGN !== undefined && Number(priceNGN) !== plan.priceNGN) {
+      plan.priceNGN = Number(priceNGN) || undefined;
+      ngnChanged = true;
+    }
+    if (countries) plan.countries = parseCountries(countries, plan.priceNGN, plan.stripePriceId);
+    if (features) plan.features = { ...(plan.features?.toObject?.() || plan.features), ...features };
     if (isActive !== undefined) plan.isActive = isActive;
     if (isPopular !== undefined) plan.isPopular = isPopular;
     if (displayOrder !== undefined) plan.displayOrder = displayOrder;
     if (metadata) plan.metadata = { ...plan.metadata, ...metadata };
     plan.updatedBy = req.user._id;
+
+    if (ngnChanged || (name && plan.paystackPlanCode)) {
+      try {
+        await syncPaystackPlan(plan);
+      } catch (e) {
+        return res.status(400).json({ message: `Could not update Paystack plan: ${e.message}` });
+      }
+    }
 
     await plan.save();
 

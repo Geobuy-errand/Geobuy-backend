@@ -11,16 +11,23 @@ const serviceRequestSchema = new mongoose.Schema(
       ref: 'User',
       required: true,
     },
+    // Categories are admin-managed (ServiceCategory collection), so this is
+    // no longer a fixed enum — the old enum rejected most seeded categories.
     category: {
       type: String,
-      enum: [
-        'care',
-        'trades',
-        'professional',
-        'personal',
-        'other',
-      ],
       required: true,
+      trim: true,
+    },
+    country: {
+      type: String,
+      enum: ['GB', 'NG'],
+      default: 'GB',
+      index: true,
+    },
+    currency: {
+      type: String,
+      enum: ['GBP', 'NGN'],
+      default: 'GBP',
     },
     serviceType: {
       type: String,
@@ -34,7 +41,10 @@ const serviceRequestSchema = new mongoose.Schema(
     location: {
       address: String,
       street: String,
+      area: String,
       town: String,
+      lga: String,
+      state: String,
       postcode: String,
       coordinates: {
         lat: Number,
@@ -60,8 +70,9 @@ const serviceRequestSchema = new mongoose.Schema(
     },
     serviceFee: {
       type: Number,
-      default: 1.99,
+      default: 0,
     },
+    platformFeePercentage: Number,
     status: {
       type: String,
       enum: [
@@ -99,6 +110,10 @@ const serviceRequestSchema = new mongoose.Schema(
         },
         message: String,
         offerAmount: Number,
+        quoteId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'Quote',
+        },
         status: {
           type: String,
           enum: ['sent', 'accepted', 'rejected', 'countered'],
@@ -136,7 +151,9 @@ const serviceRequestSchema = new mongoose.Schema(
         distance: Number,
         status: {
           type: String,
-          enum: ['pending', 'invited', 'declined', 'accepted'],
+          // 'quoted' was being set by submitQuote but was missing here, which
+          // made every quote submission fail validation.
+          enum: ['pending', 'invited', 'quoted', 'declined', 'accepted', 'rejected'],
           default: 'pending',
         },
         invitedAt: {

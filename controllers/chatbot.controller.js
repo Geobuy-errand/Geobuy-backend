@@ -23,13 +23,13 @@ const CHATBOT_RESPONSES = {
   'booking': 'I can help you with bookings! 📋\n• To book: Go to "Book Errand"\n• To track: Go to "My Errands"\n• To cancel: Go to errand details\n\nNeed specific help? Ask me!',
   
   // Provider
-  'find provider': 'To find a provider:\n1. Go to "Find Services"\n2. Select a category\n3. Filter by DBS/Insurance\n4. View provider profiles\n5. Request a service!',
+  'find provider': 'To find a provider:\n1. Go to "Find Services"\n2. Select a category\n3. Filter by background check (DBS in the UK) or insurance\n4. View provider profiles\n5. Request a service!',
   'provider': 'I can help you find providers! 🔍\n• Browse categories\n• Check verification badges\n• View ratings and reviews\n• Request quotes\n\nWhat type of provider are you looking for?',
   
   // Payment
-  'payment': '💰 Payment Questions:\n• We accept card payments\n• Payment is held in escrow\n• Released when errand is complete\n• 20% platform fee, 80% to provider\n• Secure Stripe processing',
-  'pay': 'You can pay securely with your card 💳\n• Payment is held until completion\n• Full refund if errand not completed\n• Check your payment status in "My Payments"',
-  'refund': '🔄 Refunds:\n• If errand is cancelled, you get full refund\n• Refunds process in 3-5 business days\n• Contact support for refund help',
+  'payment': '💰 Payment Questions:\n• UK: pay by card in £ (secure Stripe checkout)\n• Nigeria: pay in ₦ by card, bank transfer or USSD (secure Paystack checkout)\n• Payment is held in escrow\n• Released when you confirm the errand is complete',
+  'pay': 'You can pay securely 💳 (UK: card via Stripe · Nigeria: card, transfer or USSD via Paystack)\n• Payment is held until completion\n• Full refund if errand not completed\n• Check your payment status in "My Payments"',
+  'refund': '🔄 Refunds:\n• If a paid errand is cancelled before pickup, it is refunded automatically\n• Refunds go back to the card or account you paid with and can take a few working days\n• Contact support for refund help',
   
   // Account
   'account': '👤 Account Help:\n• Update profile in Settings\n• Change password in Security\n• View your bookings in Dashboard\n• Check your wallet balance',

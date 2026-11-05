@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { ALL_REGIONS, canonicalRegion } = require('../config/locations');
 
 const connectionSchema = new mongoose.Schema(
   {
@@ -35,24 +36,19 @@ const connectionSchema = new mongoose.Schema(
         default: '',
       },
     },
-    // ✅ UK State - dropdown instead of free text
     state: {
       type: String,
       required: true,
-      enum: [
-        // Regions
-        'England', 'Scotland', 'Wales', 'Northern Ireland',
-        // Major Cities
-        'London', 'Manchester', 'Birmingham', 'Liverpool',
-        'Bristol', 'Sheffield', 'Leeds', 'Newcastle',
-        'Nottingham', 'Southampton', 'Brighton', 'Oxford',
-        'Cambridge', 'York', 'Bath', 'Edinburgh', 'Glasgow',
-        'Aberdeen', 'Dundee', 'Cardiff', 'Swansea', 'Belfast',
-        'Derry', 'Reading', 'Leicester', 'Coventry', 'Stoke',
-        'Wolverhampton', 'Plymouth', 'Exeter', 'Bournemouth',
-        'Portsmouth', 'Norwich', 'Peterborough', 'Chelmsford',
-        'Colchester', 'St Albans', 'All UK'
-      ],
+      // UK regions/cities + Nigerian states (see config/locations.js).
+      // The setter accepts 'london', 'st_albans', 'FCT' etc.
+      enum: ALL_REGIONS,
+      set: canonicalRegion,
+    },
+    country: {
+      type: String,
+      enum: ['GB', 'NG'],
+      default: 'GB',
+      index: true,
     },
     fullName: {
       type: String,

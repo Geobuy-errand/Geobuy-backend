@@ -30,6 +30,14 @@ const userSchema = new mongoose.Schema(
       enum: ["customer", "errand_runner", "provider", "admin"],
       default: "customer",
     },
+    // Country the account operates in. Drives currency, payment gateway,
+    // distance units and which errands/providers a user can see.
+    country: {
+      type: String,
+      enum: ["GB", "NG"],
+      default: "GB",
+      index: true,
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -40,8 +48,11 @@ const userSchema = new mongoose.Schema(
     },
     address: {
       street: String,
-      town: String,
-      postcode: String,
+      area: String, // e.g. Lekki Phase 1, Wuse 2
+      town: String, // town / city
+      lga: String, // Nigeria: Local Government Area
+      state: String, // Nigeria: state (UK: county, optional)
+      postcode: String, // required in UK, optional in Nigeria
     },
     // Customer specific fields
     accessNeeds: String,
@@ -58,11 +69,23 @@ const userSchema = new mongoose.Schema(
       drivingLicence: String,
       vehicleRegistration: String,
       vehicleInsurance: String,
+      // Nigeria
+      ninSlip: String, // NIN slip / National ID card
+      utilityBill: String, // proof of address
+      // Providers (optional)
+      certification: String,
+      insurance: String,
     },
+    nin: String, // National Identification Number (Nigeria)
     bankDetails: {
       bankName: String,
-      sortCode: String,
+      sortCode: String, // UK only
       accountNumber: String,
+      // Nigeria (Paystack)
+      bankCode: String,
+      accountName: String,
+      isVerified: { type: Boolean, default: false },
+      paystackRecipientCode: String,
     },
     renderCareServices: {
       type: Boolean,
@@ -75,6 +98,7 @@ const userSchema = new mongoose.Schema(
       default: "not_submitted",
     },
     rejectionReason: String,
+    verificationRequestedAt: Date,
     averageRating: {
       type: Number,
       default: 0,
@@ -106,7 +130,7 @@ const userSchema = new mongoose.Schema(
     ],
     serviceArea: {
       postcodes: [String],
-      radius: Number, // in miles
+      radius: Number, // in the country's unit (miles for UK, km for Nigeria)
     },
     travelType: {
       type: String,
@@ -207,16 +231,15 @@ const userSchema = new mongoose.Schema(
         default: false,
       },
       stripeCustomerId: String,
+      paystackCustomerCode: String,
+      gateway: { type: String, enum: ["stripe", "paystack"] },
       subscriptionId: String,
       subscriptionStatus: {
         type: String,
-        enum: ["active", "inactive", "canceled", "past_due"],
+        enum: ["active", "inactive", "canceled", "past_due", "trialing", "incomplete"],
         default: "inactive",
       },
-      subscriptionPlan: {
-        type: String,
-        enum: ["basic", "premium", "pro"],
-      },
+      subscriptionPlan: String,
       subscribedAt: Date,
       subscriptionExpiresAt: Date,
     },
@@ -238,6 +261,15 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ location: "2dsphere" });
+
+// Never send password hashes or payout recipient codes to clients.
+userSchema.set("toJSON", {
+  transform(doc, ret) {
+    delete ret.password;
+    if (ret.bankDetails) delete ret.bankDetails.paystackRecipientCode;
+    return ret;
+  },
+});
 
 // Hash password before saving
 userSchema.pre("save", async function (next) {

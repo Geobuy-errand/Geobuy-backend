@@ -3,23 +3,46 @@ const Subscription = require("../models/Subscription.model");
 const User = require("../models/User.model");
 const SubscriptionPlan = require("../models/SubscriptionPlan.model");
 const createNotification = require("../utils/create-notification");
+const Payment = require("../models/Payment.model");
+const paystack = require("../services/payments/paystack");
+const { frontendUrl } = require("../services/payments");
+const { countryOfUser } = require("../config/countries");
+const { formatMoney } = require("../utils/money");
+
+/** Plans a user's country can buy, with the price in their currency. */
+function plansForCountry(plans, country) {
+  return plans
+    .filter((p) => {
+      const countries = p.countries?.length ? p.countries : ["GB"];
+      if (!countries.includes(country)) return false;
+      return country === "NG" ? p.priceNGN > 0 : Boolean(p.stripePriceId);
+    })
+    .map((p) => {
+      const obj = p.toObject ? p.toObject() : p;
+      const price = country === "NG" ? obj.priceNGN : obj.price;
+      const currency = country === "NG" ? "NGN" : "GBP";
+      return { ...obj, localPrice: price, currency, formattedPrice: formatMoney(price, currency) };
+    });
+}
+exports.plansForCountry = plansForCountry;
 
 // Subscription Plans
 
 exports.getPlans = async (req, res) => {
   try {
-    const plans = await SubscriptionPlan.find({ isActive: true }).sort({
-      displayOrder: 1,
-      price: 1,
-    });
+    const country = countryOfUser(req.user);
+    const plans = plansForCountry(
+      await SubscriptionPlan.find({ isActive: true }).sort({ displayOrder: 1, price: 1 }),
+      country
+    );
 
     const currentSubscription = await Subscription.findOne({
       userId: req.user._id,
-      status: "active",
+      status: { $in: ["active", "trialing"] },
     });
 
     const plansWithStatus = plans.map((plan) => ({
-      ...plan.toObject(),
+      ...plan,
       isCurrent: currentSubscription?.plan?.toString() === plan._id.toString(),
       isActive: currentSubscription?.status === "active",
     }));
@@ -85,6 +108,56 @@ exports.createCheckoutSession = async (req, res) => {
         .json({ message: "This plan is currently not available" });
     }
 
+    // ---------------- Nigeria: Paystack subscription ----------------
+    if (countryOfUser(user) === "NG") {
+      if (!(plan.countries || ["GB"]).includes("NG") || !(plan.priceNGN > 0)) {
+        return res.status(400).json({ message: "This plan is not available in Nigeria" });
+      }
+      if (!plan.paystackPlanCode) {
+        const created = await paystack.createPlan({
+          name: plan.name,
+          amount: plan.priceNGN,
+          interval: plan.interval,
+          description: plan.description,
+        });
+        plan.paystackPlanCode = created.planCode;
+        await plan.save();
+      }
+
+      const reference = paystack.makeReference("SUB");
+      await Payment.create({
+        type: "subscription",
+        customerId: user._id,
+        amount: plan.priceNGN,
+        platformFee: plan.priceNGN,
+        providerAmount: 0,
+        currency: "NGN",
+        country: "NG",
+        gateway: "paystack",
+        reference,
+        status: "pending",
+        isEscrow: false,
+        disbursementStatus: "not_applicable",
+        metadata: { planId: String(plan._id), userId: String(user._id) },
+      });
+
+      const checkout = await paystack.createCheckout({
+        amount: plan.priceNGN,
+        currency: "NGN",
+        email: user.email,
+        reference,
+        plan: plan.paystackPlanCode,
+        callbackUrl: frontendUrl(`/${user.role}/subscriptions/success?gateway=paystack`),
+        metadata: { type: "subscription", planId: String(plan._id), userId: String(user._id) },
+      });
+
+      return res.json({ sessionId: checkout.reference, sessionUrl: checkout.url, url: checkout.url, gateway: "paystack" });
+    }
+
+    if (!plan.stripePriceId) {
+      return res.status(400).json({ message: "This plan is not available in the UK" });
+    }
+
     // Get or create Stripe customer
     let subscription = await Subscription.findOne({ userId: user._id });
     let stripeCustomerId = subscription?.stripeCustomerId;
@@ -144,8 +217,8 @@ exports.createCheckoutSession = async (req, res) => {
           mode: "subscription",
           success_url: successUrl 
             ? `${successUrl}${successUrl.includes('?') ? '&' : '?'}session_id={CHECKOUT_SESSION_ID}`
-            : `${process.env.FRONTEND_URL}/${user?.role}/subscriptions/success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: cancelUrl || `${process.env.FRONTEND_URL}/${user.role}/subscriptions/cancel`,
+            : frontendUrl(`/${user?.role}/subscriptions/success?session_id={CHECKOUT_SESSION_ID}`),
+          cancel_url: cancelUrl || frontendUrl(`/${user.role}/subscriptions/cancel`),
           metadata: {
             userId: user._id.toString(),
             planId: plan._id.toString(),
@@ -247,8 +320,15 @@ exports.cancelSubscription = async (req, res) => {
       return res.status(404).json({ message: "No active subscription found" });
     }
 
-    // Cancel at Stripe
-    if (subscription.stripeSubscriptionId) {
+    // Cancel at the gateway (stays active until the end of the paid period)
+    if (subscription.gateway === "paystack" && subscription.paystackSubscriptionCode) {
+      let token = subscription.paystackEmailToken;
+      if (!token) {
+        const remote = await paystack.fetchSubscription(subscription.paystackSubscriptionCode);
+        token = remote?.email_token;
+      }
+      await paystack.disableSubscription(subscription.paystackSubscriptionCode, token);
+    } else if (subscription.stripeSubscriptionId) {
       await stripe.subscriptions.update(subscription.stripeSubscriptionId, {
         cancel_at_period_end: true,
       });
@@ -283,8 +363,15 @@ exports.resumeSubscription = async (req, res) => {
         .json({ message: "No subscription found to resume" });
     }
 
-    // Resume at Stripe
-    if (subscription.stripeSubscriptionId) {
+    // Resume at the gateway
+    if (subscription.gateway === "paystack" && subscription.paystackSubscriptionCode) {
+      let token = subscription.paystackEmailToken;
+      if (!token) {
+        const remote = await paystack.fetchSubscription(subscription.paystackSubscriptionCode);
+        token = remote?.email_token;
+      }
+      await paystack.enableSubscription(subscription.paystackSubscriptionCode, token);
+    } else if (subscription.stripeSubscriptionId) {
       await stripe.subscriptions.update(subscription.stripeSubscriptionId, {
         cancel_at_period_end: false,
       });
@@ -317,11 +404,19 @@ exports.getSubscriptionHistory = async (req, res) => {
       trialing: subscriptions.filter((s) => s.status === "trialing").length,
       canceled: subscriptions.filter((s) => s.status === "canceled").length,
       pastDue: subscriptions.filter((s) => s.status === "past_due").length,
-      revenue: subscriptions
-        .filter((s) => s.status === "active")
-        .reduce((sum, s) => sum + (PLANS[s.plan]?.price || 0), 0),
+      // Revenue per currency (GBP and NGN can't be added together).
+      // `PLANS` was undefined here, which crashed this endpoint.
+      revenueByCurrency: subscriptions
+        .filter((s) => ["active", "trialing"].includes(s.status))
+        .reduce((acc, s) => {
+          const cur = s.currency || "GBP";
+          const amount = s.amount ?? (cur === "NGN" ? s.plan?.priceNGN : s.plan?.price) ?? 0;
+          acc[cur] = (acc[cur] || 0) + amount;
+          return acc;
+        }, {}),
     };
 
+    stats.revenue = stats.revenueByCurrency.GBP || 0;
     res.json({
       subscriptions,
       stats,
@@ -336,7 +431,7 @@ exports.getSubscriptionStatus = async (req, res) => {
   try {
     const subscription = await Subscription.findOne({
       userId: req.user._id,
-    }).populate("plan", "name description interval price features");
+    }).populate("plan", "name description interval price priceNGN features");
 
     const status = {
       isSubscribed: false,
@@ -347,7 +442,7 @@ exports.getSubscriptionStatus = async (req, res) => {
       cancelAtPeriodEnd: false,
     };
 
-    if (subscription && subscription.status === "active") {
+    if (subscription && ["active", "trialing"].includes(subscription.status)) {
       status.isSubscribed = true;
       status.plan = subscription.plan;
       status.status = subscription.status;
@@ -370,6 +465,22 @@ exports.verifySubscriptionSession = async (req, res) => {
     
     if (!sessionId) {
       return res.status(400).json({ success: false, message: 'Session ID required' });
+    }
+
+    // Paystack references (Nigeria)
+    if (req.query.gateway === "paystack" || /^SUB_/.test(sessionId)) {
+      const payment = await Payment.findOne({ reference: sessionId, type: "subscription" });
+      if (!payment) return res.status(404).json({ success: false, message: "Subscription payment not found" });
+      const verified = await paystack.verify(sessionId);
+      if (verified.paid) await activatePaystackSubscriptionFromPayment(payment, verified.raw);
+      const local = await Subscription.findOne({ userId: payment.customerId }).populate("plan", "name");
+      return res.json({
+        success: verified.paid,
+        session: { id: sessionId, status: verified.status },
+        localRecord: local ? { id: local._id, status: local.status, plan: local.plan?._id } : null,
+        planName: local?.plan?.name || null,
+        isSubscribed: Boolean(local && ["active", "trialing"].includes(local.status)),
+      });
     }
 
     console.log('🔍 Verifying session:', sessionId);
@@ -682,3 +793,108 @@ async function handleCheckoutSessionCompleted(session) {
   
     console.log('⚠️ Subscription marked as past_due:', subscriptionRecord._id);
   }
+
+// ============================================================
+// PAYSTACK (Nigeria) subscription lifecycle
+// ============================================================
+
+function addInterval(date, interval) {
+  const d = new Date(date);
+  if (interval === "year") d.setFullYear(d.getFullYear() + 1);
+  else d.setMonth(d.getMonth() + 1);
+  return d;
+}
+
+/** First charge of a Paystack subscription succeeded. Idempotent. */
+async function activatePaystackSubscriptionFromPayment(payment, data = {}) {
+  const claimed = await Payment.findOneAndUpdate(
+    { _id: payment._id, status: { $in: ["pending", "processing", "failed", "cancelled"] } },
+    { $set: { status: "succeeded", paymentDate: new Date() } },
+    { new: true }
+  );
+  if (!claimed) return { alreadyProcessed: true };
+
+  const planId = claimed.metadata?.planId;
+  const plan = await SubscriptionPlan.findById(planId);
+  if (!plan) return { error: "plan_not_found" };
+
+  const now = new Date();
+  const record = await Subscription.findOneAndUpdate(
+    { userId: claimed.customerId },
+    {
+      $set: {
+        userId: claimed.customerId,
+        plan: plan._id,
+        gateway: "paystack",
+        country: "NG",
+        currency: "NGN",
+        amount: plan.priceNGN,
+        paystackCustomerCode: data.customer?.customer_code,
+        paystackPlanCode: plan.paystackPlanCode,
+        lastReference: claimed.reference,
+        status: "active",
+        currentPeriodStart: now,
+        currentPeriodEnd: addInterval(now, plan.interval),
+        cancelAtPeriodEnd: false,
+        features: plan.features || {},
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  await User.findByIdAndUpdate(claimed.customerId, {
+    "subscription.isSubscribed": true,
+    "subscription.subscriptionStatus": "active",
+    "subscription.subscriptionPlan": plan.name,
+    "subscription.subscriptionId": String(record._id),
+    "subscription.paystackCustomerCode": data.customer?.customer_code,
+    "subscription.gateway": "paystack",
+    "subscription.subscribedAt": now,
+    "subscription.subscriptionExpiresAt": record.currentPeriodEnd,
+  });
+
+  await createNotification(claimed.customerId, "subscription_started", "Subscription started", `Your ${plan.name} plan is now active.`, {
+    planId: plan._id,
+    subscriptionId: record._id,
+  });
+  return { subscription: record };
+}
+
+/** Paystack sends subscription.create with the code + email token we need to cancel later. */
+async function onPaystackSubscriptionCreated(data) {
+  const customerCode = data.customer?.customer_code;
+  const email = data.customer?.email;
+  let sub = customerCode ? await Subscription.findOne({ paystackCustomerCode: customerCode }) : null;
+  if (!sub && email) {
+    const user = await User.findOne({ email: String(email).toLowerCase() });
+    if (user) sub = await Subscription.findOne({ userId: user._id });
+  }
+  if (!sub) return;
+  sub.paystackSubscriptionCode = data.subscription_code;
+  sub.paystackEmailToken = data.email_token;
+  if (data.next_payment_date) sub.currentPeriodEnd = new Date(data.next_payment_date);
+  sub.paystackCustomerCode = customerCode || sub.paystackCustomerCode;
+  await sub.save();
+}
+
+/** Monthly / yearly renewal charge. */
+async function onPaystackRenewal(data) {
+  const customerCode = data.customer?.customer_code;
+  const sub = customerCode ? await Subscription.findOne({ paystackCustomerCode: customerCode }).populate("plan") : null;
+  if (!sub || sub.lastReference === data.reference) return;
+  const start = new Date();
+  sub.status = "active";
+  sub.lastReference = data.reference;
+  sub.currentPeriodStart = start;
+  sub.currentPeriodEnd = addInterval(start, sub.plan?.interval || "month");
+  await sub.save();
+  await User.findByIdAndUpdate(sub.userId, {
+    "subscription.isSubscribed": true,
+    "subscription.subscriptionStatus": "active",
+    "subscription.subscriptionExpiresAt": sub.currentPeriodEnd,
+  });
+}
+
+exports.activatePaystackSubscriptionFromPayment = activatePaystackSubscriptionFromPayment;
+exports.onPaystackSubscriptionCreated = onPaystackSubscriptionCreated;
+exports.onPaystackRenewal = onPaystackRenewal;

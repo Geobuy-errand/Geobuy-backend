@@ -9,6 +9,9 @@ const { upload } = require('../middleware/upload');
 // ERRAND ROUTES (Replaces Booking)
 // ============================================================
 
+// Price preview
+router.post('/quote', authMiddleware, requireRole('customer'), ErrandController.quoteErrand);
+
 // Get all errands (was: get all bookings)
 router.get('/', authMiddleware, ErrandController.getErrands);
 
@@ -31,7 +34,7 @@ router.post('/', authMiddleware, requireRole('customer'), ErrandController.creat
 router.put('/:id/accept', authMiddleware, requireRole('errand_runner'), ErrandController.acceptErrand);
 
 // Update errand status (was: update booking status)
-router.put('/:id/status', authMiddleware, ErrandController.updateErrandStatus);
+router.put('/:id/status', authMiddleware, requireRole('customer', 'errand_runner', 'admin'), ErrandController.updateErrandStatus);
 
 // ============================================================
 // QR CODE ROUTES

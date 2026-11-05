@@ -10,7 +10,8 @@ const authMiddleware = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('-password');
+    // Older provider tokens used `id` instead of `userId` — accept both.
+    const user = await User.findById(decoded.userId || decoded.id).select('-password');
 
     if (!user) {
       return res.status(401).json({ message: 'User not found' });
@@ -45,4 +46,19 @@ const requireRole = (...roles) => {
   };
 };
 
-module.exports = { authMiddleware, requireRole };
+// Sets req.user if a valid token cookie is present; never rejects the request.
+const optionalAuth = async (req, res, next) => {
+  try {
+    const token = req.cookies?.token;
+    if (token) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.userId || decoded.id).select('-password');
+      if (user && user.isActive) req.user = user;
+    }
+  } catch (e) {
+    // ignore — treat as anonymous
+  }
+  next();
+};
+
+module.exports = { authMiddleware, requireRole, optionalAuth };

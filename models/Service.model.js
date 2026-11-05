@@ -47,6 +47,19 @@ const serviceSchema = new mongoose.Schema(
     },
     serviceAreas: [String],
     restrictions: [String],
+    // Countries this service is offered in. basePrice etc. are the UK (£)
+    // prices; pricesNG holds the Nigerian (₦) prices.
+    countries: {
+      type: [String],
+      enum: ['GB', 'NG'],
+      default: ['GB', 'NG'],
+    },
+    pricesNG: {
+      basePrice: Number,
+      pricePerKm: Number,
+      minPrice: Number,
+      maxPrice: Number,
+    },
   },
   {
     timestamps: true,

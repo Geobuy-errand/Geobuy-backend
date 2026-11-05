@@ -8,10 +8,31 @@ const subscriptionSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+    gateway: {
+      type: String,
+      enum: ['stripe', 'paystack'],
+      default: 'stripe',
+    },
+    country: {
+      type: String,
+      enum: ['GB', 'NG'],
+      default: 'GB',
+    },
+    currency: {
+      type: String,
+      enum: ['GBP', 'NGN'],
+      default: 'GBP',
+    },
+    amount: Number,
     stripeCustomerId: {
       type: String,
-      required: true,
     },
+    // Paystack
+    paystackCustomerCode: String,
+    paystackSubscriptionCode: { type: String, index: true, sparse: true },
+    paystackEmailToken: String,
+    paystackPlanCode: String,
+    lastReference: String,
     stripeSubscriptionId: {
       type: String,
     },

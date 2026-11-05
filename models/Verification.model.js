@@ -16,6 +16,8 @@ const verificationSchema = new mongoose.Schema(
         'insurance',
         'address',
         'right_to_work',
+        'nin',
+        'utility_bill',
       ],
       required: true,
     },

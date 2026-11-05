@@ -1,3 +1,13 @@
+// FRONTEND_URL may be a comma-separated list; links use the first one.
+const APP_URL = () => (process.env.FRONTEND_URL || "").split(",")[0].trim().replace(/\/$/, "");
+
+// Amounts may be passed pre-formatted ("₦1,500.00" via utils/money.formatMoney)
+// or as a bare number (legacy callers — shown in GBP).
+const money = (amount) => {
+  if (typeof amount === "string" && /[^\d.,\s-]/.test(amount)) return amount;
+  const n = Number(amount);
+  return Number.isFinite(n) ? `£${n.toFixed(2)}` : String(amount ?? "");
+};
 // ============================================================
 // AUTH TEMPLATES
 // ============================================================
@@ -26,7 +36,7 @@ const authTemplates = {
         <p>Ready to get started? Explore our services and find help today!</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/dashboard`,
+      url: `${APP_URL()}/customer/dashboard`,
       text: "Go to Dashboard",
     },
   }),
@@ -52,7 +62,7 @@ const authTemplates = {
         <p>While you wait, complete your profile to get ready!</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/dashboard`,
+      url: `${APP_URL()}/provider/dashboard`,
       text: "Complete Profile",
     },
   }),
@@ -78,7 +88,7 @@ const authTemplates = {
         <p>While you wait, complete your profile and set your availability!</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/runner/dashboard`,
+      url: `${APP_URL()}/errand-runner/dashboard`,
       text: "Complete Profile",
     },
   }),
@@ -109,7 +119,7 @@ const authTemplates = {
         <p>If you didn't make this change, please contact our support team immediately.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/login`,
+      url: `${APP_URL()}/login`,
       text: "Login",
     },
   }),
@@ -122,7 +132,7 @@ const connectionTemplates = {
     title: "Welcome to GEOBUY Connect! 🎉",
     content: `
         <h2>Hi ${userName},</h2>
-        <p>Great news! Your one-time connection fee of <strong>£${amount}</strong> has been successfully paid.</p>
+        <p>Great news! Your one-time connection fee of <strong>${money(amount)}</strong> has been successfully paid.</p>
         <div class="info-box">
           <p><strong>Connection ID:</strong> ${connectionId}</p>
           <p><strong>Status:</strong> <span class="badge">Active</span></p>
@@ -138,7 +148,7 @@ const connectionTemplates = {
         <p>Check your dashboard for upcoming meetup spots and activities.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/connect-dashboard`,
+      url: `${APP_URL()}/customer/connect-dashboard`,
       text: "Go to Connect Dashboard",
     },
   }),
@@ -164,7 +174,7 @@ const connectionTemplates = {
         <p>Ready to start connecting? Check your dashboard for the latest meetup spots!</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/connect-dashboard`,
+      url: `${APP_URL()}/customer/connect-dashboard`,
       text: "View Connect Dashboard",
     },
   }),
@@ -183,7 +193,7 @@ const connectionTemplates = {
         <p>Don't miss out on this opportunity to connect with others in your community!</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/connect-dashboard`,
+      url: `${APP_URL()}/customer/connect-dashboard`,
       text: "View Details",
     },
   }),
@@ -213,7 +223,7 @@ const connectionTemplates = {
         <p>Your next connection could be just around the corner. See you there! 🌟</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/connect-dashboard`,
+      url: `${APP_URL()}/customer/connect-dashboard`,
       text: "View Event Details",
     },
   }),
@@ -233,7 +243,7 @@ const connectionTemplates = {
           <p>We hope you have a great time connecting with new people!</p>
         `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/connect-dashboard`,
+      url: `${APP_URL()}/customer/connect-dashboard`,
       text: "View Details",
     },
   }),
@@ -252,7 +262,7 @@ const connectionTemplates = {
           <p>Log in to your dashboard for more details.</p>
         `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/connections`,
+      url: `${APP_URL()}/customer/connections`,
       text: "View Connections",
     },
   }),
@@ -274,12 +284,12 @@ const bookingTemplates = {
           <p><strong>Booking ID:</strong> ${bookingId}</p>
           <p><strong>Service:</strong> ${serviceType}</p>
           <p><strong>Date:</strong> ${date}</p>
-          <p><strong>Amount:</strong> £${amount}</p>
+          <p><strong>Amount:</strong> ${money(amount)}</p>
         </div>
         <p>We'll notify you when a provider accepts your booking.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/booking-history`,
+      url: `${APP_URL()}/customer/bookings`,
       text: "View Booking",
     },
   }),
@@ -299,7 +309,7 @@ const bookingTemplates = {
         <p>You can now track your booking status in real-time.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/booking-history`,
+      url: `${APP_URL()}/customer/bookings`,
       text: "Track Booking",
     },
   }),
@@ -317,7 +327,7 @@ const bookingTemplates = {
         <p>We hope you had a great experience! Please take a moment to rate your provider.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/booking-history`,
+      url: `${APP_URL()}/customer/bookings`,
       text: "Rate Provider",
     },
   }),
@@ -333,7 +343,7 @@ const bookingTemplates = {
         <p>If you have any questions, please contact our support team.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/booking-history`,
+      url: `${APP_URL()}/customer/bookings`,
       text: "View Details",
     },
   }),
@@ -350,16 +360,16 @@ const paymentTemplates = {
     title: "Payment Confirmed! ✅",
     content: `
         <h2>Hi ${userName},</h2>
-        <p>Your payment of <strong>£${amount}</strong> has been successfully processed.</p>
+        <p>Your payment of <strong>${money(amount)}</strong> has been successfully processed.</p>
         <div class="info-box">
-          <p><strong>Amount:</strong> £${amount}</p>
+          <p><strong>Amount:</strong> ${money(amount)}</p>
           <p><strong>Service:</strong> ${serviceType}</p>
           <p><strong>Transaction ID:</strong> ${transactionId}</p>
         </div>
         <p>Your payment is now complete. Thank you for using GEOBUY Errands!</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/payments`,
+      url: `${APP_URL()}/customer/payments`,
       text: "View Payments",
     },
   }),
@@ -370,7 +380,7 @@ const paymentTemplates = {
     title: "Payment Failed ❌",
     content: `
         <h2>Hi ${userName},</h2>
-        <p>We were unable to process your payment of <strong>£${amount}</strong>.</p>
+        <p>We were unable to process your payment of <strong>${money(amount)}</strong>.</p>
         <div class="info-box" style="border-left-color: #dc3545;">
           <p><strong>Error:</strong> ${
             errorMessage ||
@@ -380,7 +390,7 @@ const paymentTemplates = {
         <p>Please check your payment details and try again.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/payments`,
+      url: `${APP_URL()}/customer/payments`,
       text: "Try Again",
     },
   }),
@@ -391,7 +401,7 @@ const paymentTemplates = {
     title: "Payment Refunded 💰",
     content: `
         <h2>Hi ${userName},</h2>
-        <p>Your payment of <strong>£${amount}</strong> has been refunded.</p>
+        <p>Your payment of <strong>${money(amount)}</strong> has been refunded.</p>
         ${reason ? `<p><strong>Reason:</strong> ${reason}</p>` : ""}
         <p>The refund will appear in your account within 3-5 business days.</p>
       `,
@@ -412,13 +422,13 @@ const providerTemplates = {
         <p>A new job is available in your area:</p>
         <div class="info-box">
           <p><strong>Job:</strong> ${jobTitle}</p>
-          <p><strong>Amount:</strong> £${amount}</p>
+          <p><strong>Amount:</strong> ${money(amount)}</p>
           <p><strong>Location:</strong> ${location}</p>
         </div>
         <p>Log in to your dashboard to view and accept this job.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/available-jobs`,
+      url: `${APP_URL()}/provider/available-jobs`,
       text: "View Job",
     },
   }),
@@ -434,7 +444,7 @@ const providerTemplates = {
         <p>Welcome to the GEOBUY provider community! 🌟</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/dashboard`,
+      url: `${APP_URL()}/provider/dashboard`,
       text: "Go to Dashboard",
     },
   }),
@@ -453,7 +463,7 @@ const providerTemplates = {
         <p>Please update your documents and resubmit for verification.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/verification`,
+      url: `${APP_URL()}/provider/verification`,
       text: "Update Documents",
     },
   }),
@@ -479,7 +489,7 @@ const subscriptionTemplates = {
         <p>Enjoy the benefits of your subscription plan.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/subscriptions`,
+      url: `${APP_URL()}/customer/subscriptions`,
       text: "View Subscription",
     },
   }),
@@ -494,7 +504,7 @@ const subscriptionTemplates = {
         <p>You will continue to have access until the end of your current billing period.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/subscriptions`,
+      url: `${APP_URL()}/customer/subscriptions`,
       text: "View Details",
     },
   }),
@@ -509,7 +519,7 @@ const subscriptionTemplates = {
         <p>Renew now to continue enjoying the benefits.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/subscriptions`,
+      url: `${APP_URL()}/customer/subscriptions`,
       text: "Renew Subscription",
     },
   }),
@@ -551,7 +561,7 @@ const verificationTemplates = {
         }
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/profile`,
+      url: `${APP_URL()}/customer/profile`,
       text: "View Profile",
     },
   }),
@@ -601,7 +611,7 @@ const supportTemplates = {
       <p>Please review and respond to the customer as soon as possible.</p>
     `,
     button: {
-      url: `${process.env.FRONTEND_URL}/admin/support`,
+      url: `${APP_URL()}/admin/support`,
       text: "View Ticket",
     },
   }),
@@ -622,13 +632,13 @@ const errandTemplates = {
           <p><strong>Errand ID:</strong> ${errandId}</p>
           <p><strong>Service:</strong> ${serviceType}</p>
           <p><strong>Date:</strong> ${date}</p>
-          <p><strong>Amount:</strong> £${amount}</p>
+          <p><strong>Amount:</strong> ${money(amount)}</p>
           <p><strong>Status:</strong> <span class="badge">Pending</span></p>
         </div>
         <p>We'll notify you when a provider accepts your errand.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/errands/${errandId}`,
+      url: `${APP_URL()}/customer/bookings`,
       text: "View Errand",
     },
   }),
@@ -649,7 +659,7 @@ const errandTemplates = {
         <p>You can now track your errand status in real-time and chat with your provider.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/errands/${errandId}`,
+      url: `${APP_URL()}/customer/bookings`,
       text: "Track Errand",
     },
   }),
@@ -670,7 +680,7 @@ const errandTemplates = {
         <p>Please review the details and contact the customer if needed.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/errands/${errandId}`,
+      url: `${APP_URL()}/errand-runner/accepted-jobs`,
       text: "View Errand",
     },
   }),
@@ -690,7 +700,7 @@ const errandTemplates = {
         <p>We hope you had a great experience! Please take a moment to rate your provider.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/errands/${errandId}/rate`,
+      url: `${APP_URL()}/customer/bookings`,
       text: "Rate Provider",
     },
   }),
@@ -710,7 +720,7 @@ const errandTemplates = {
         <p>Your payment is being processed and will be added to your wallet shortly.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/errands/${errandId}`,
+      url: `${APP_URL()}/errand-runner/accepted-jobs`,
       text: "View Details",
     },
   }),
@@ -730,7 +740,7 @@ const errandTemplates = {
         <p>If you have any questions, please contact our support team.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/errands`,
+      url: `${APP_URL()}/customer/bookings`,
       text: "View Errands",
     },
   }),
@@ -745,12 +755,12 @@ const errandTemplates = {
         <div class="info-box">
           <p><strong>Errand ID:</strong> ${errandId}</p>
           <p><strong>Provider:</strong> ${providerName}</p>
-          <p><strong>Offer Amount:</strong> £${amount}</p>
+          <p><strong>Offer Amount:</strong> ${money(amount)}</p>
         </div>
         <p>Review the offer and accept or negotiate the price.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/customer/errands/${errandId}`,
+      url: `${APP_URL()}/customer/bookings`,
       text: "Review Offer",
     },
   }),
@@ -764,13 +774,13 @@ const errandTemplates = {
         <p>Congratulations! Your offer has been accepted.</p>
         <div class="info-box">
           <p><strong>Errand ID:</strong> ${errandId}</p>
-          <p><strong>Accepted Amount:</strong> £${amount}</p>
+          <p><strong>Accepted Amount:</strong> ${money(amount)}</p>
           <p><strong>Status:</strong> <span class="badge" style="background-color: #22c55e;">Accepted</span></p>
         </div>
         <p>You are now assigned to this errand. Please contact the customer to arrange details.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/errands/${errandId}`,
+      url: `${APP_URL()}/errand-runner/accepted-jobs`,
       text: "View Errand",
     },
   }),
@@ -787,15 +797,15 @@ const walletTemplates = {
     title: "Wallet Credited! 💰",
     content: `
         <h2>Hi ${userName},</h2>
-        <p><strong>£${amount}</strong> has been added to your wallet.</p>
+        <p><strong>${money(amount)}</strong> has been added to your wallet.</p>
         <div class="info-box">
-          <p><strong>Amount:</strong> £${amount}</p>
+          <p><strong>Amount:</strong> ${money(amount)}</p>
           <p><strong>Source:</strong> ${source || "Payment"}</p>
         </div>
         <p>Your current balance has been updated.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/wallet`,
+      url: `${APP_URL()}/provider/wallet`,
       text: "View Wallet",
     },
   }),
@@ -808,14 +818,14 @@ const walletTemplates = {
         <h2>Hi ${userName},</h2>
         <p>Your withdrawal request has been submitted.</p>
         <div class="info-box">
-          <p><strong>Amount:</strong> £${amount}</p>
+          <p><strong>Amount:</strong> ${money(amount)}</p>
           <p><strong>Reference:</strong> ${reference}</p>
           <p><strong>Status:</strong> <span class="badge" style="background-color: #f59e0b;">Pending</span></p>
         </div>
         <p>We'll process your withdrawal within 1-2 business days.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/withdrawals`,
+      url: `${APP_URL()}/provider/withdrawals`,
       text: "View Withdrawals",
     },
   }),
@@ -826,16 +836,16 @@ const walletTemplates = {
     title: "Withdrawal Completed! ✅",
     content: `
         <h2>Hi ${userName},</h2>
-        <p>Your withdrawal of <strong>£${amount}</strong> has been processed.</p>
+        <p>Your withdrawal of <strong>${money(amount)}</strong> has been processed.</p>
         <div class="info-box">
-          <p><strong>Amount:</strong> £${amount}</p>
+          <p><strong>Amount:</strong> ${money(amount)}</p>
           <p><strong>Reference:</strong> ${reference}</p>
           <p><strong>Status:</strong> <span class="badge" style="background-color: #22c55e;">Completed</span></p>
         </div>
         <p>The funds should appear in your bank account within 3-5 business days.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/withdrawals`,
+      url: `${APP_URL()}/provider/withdrawals`,
       text: "View Withdrawals",
     },
   }),
@@ -846,9 +856,9 @@ const walletTemplates = {
     title: "Withdrawal Failed ❌",
     content: `
         <h2>Hi ${userName},</h2>
-        <p>Your withdrawal of <strong>£${amount}</strong> could not be processed.</p>
+        <p>Your withdrawal of <strong>${money(amount)}</strong> could not be processed.</p>
         <div class="info-box" style="border-left-color: #dc3545;">
-          <p><strong>Amount:</strong> £${amount}</p>
+          <p><strong>Amount:</strong> ${money(amount)}</p>
           <p><strong>Reason:</strong> ${
             reason || "Please check your bank details and try again."
           }</p>
@@ -857,7 +867,7 @@ const walletTemplates = {
         <p>The funds have been returned to your wallet balance.</p>
       `,
     button: {
-      url: `${process.env.FRONTEND_URL}/provider/withdrawals`,
+      url: `${APP_URL()}/provider/withdrawals`,
       text: "Try Again",
     },
   }),

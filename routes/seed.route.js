@@ -1,22 +1,18 @@
 const express = require('express');
 const router = express.Router();
-const { authMiddleware, requireRole } = require('../middleware/auth.middleware');
 const seedController = require('../controllers/seed.controller');
+const { requireSeedAccess } = require('../middleware/seedGuard');
 
 // ============================================================
-// SEED ROUTES - For Production Deployment
+// SEED ROUTES — admin (or x-seed-secret) only. These used to be public,
+// which let anyone on the internet wipe the database via /reset-all.
 // ============================================================
 
-// Run all seeders (Admin only)
-router.get('/run-all', seedController.runAllSeeders);
+router.get('/status', requireSeedAccess(), seedController.getSeedStatus);
+router.get('/run-all', requireSeedAccess(), seedController.runAllSeeders);
+router.get('/run/:seeder', requireSeedAccess(), seedController.runSpecificSeeder);
 
-// Run specific seeders
-router.get('/run/:seeder', seedController.runSpecificSeeder);
-
-// Check seed status
-router.get('/status', seedController.getSeedStatus);
-
-// Reset and reseed everything (Admin only - DANGEROUS)
-router.get('/reset-all', seedController.resetAndReseed);
+// Deletes settings and categories before reseeding — also needs ALLOW_DB_RESET=true
+router.get('/reset-all', requireSeedAccess({ destructive: true }), seedController.resetAndReseed);
 
 module.exports = router;

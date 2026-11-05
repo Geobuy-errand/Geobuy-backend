@@ -1,5 +1,6 @@
 const User = require('../models/User.model');
 const ProviderProfile = require('../models/ProviderProfile.model');
+const ErrandRunnerProfile = require('../models/ErrandRunnerProfile.model');
 const Booking = require('../models/Booking.model');
 const Payment = require('../models/Payment.model');
 const Review = require('../models/Review.model');
@@ -77,9 +78,10 @@ exports.getDashboardStats = async (req, res) => {
       Booking.countDocuments(),
       Booking.countDocuments({ status: 'pending' }),
       Booking.countDocuments({ status: 'completed' }),
+      // Revenue per currency — GBP and NGN can't be summed together
       Payment.aggregate([
         { $match: { status: 'succeeded' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } },
+        { $group: { _id: { $ifNull: ['$currency', 'GBP'] }, total: { $sum: '$amount' }, platformFee: { $sum: '$platformFee' } } },
       ]),
       User.countDocuments({ role: 'provider', verificationStatus: 'pending' }),
       User.countDocuments({ 'subscription.isSubscribed': true }),
@@ -115,7 +117,14 @@ exports.getDashboardStats = async (req, res) => {
       totalBookings,
       pendingBookings,
       completedBookings,
-      totalRevenue: totalRevenue[0]?.total || 0,
+      totalRevenue: totalRevenue.find((r) => r._id === 'GBP')?.total || 0,
+      revenueByCurrency: Object.fromEntries(totalRevenue.map((r) => [r._id, { total: r.total, platformFee: r.platformFee }])),
+      usersByCountry: Object.fromEntries(
+        (await User.aggregate([
+          { $match: { role: { $ne: 'admin' } } },
+          { $group: { _id: { $ifNull: ['$country', 'GB'] }, count: { $sum: 1 } } },
+        ])).map((r) => [r._id, r.count])
+      ),
       pendingProviders,
       recentBookings,
       userGrowth,
@@ -155,6 +164,10 @@ exports.getUsers = async (req, res) => {
       query.role = role;
     }
     
+    // Filter by country (?country=GB|NG)
+    if (req.query.country === 'NG') query.country = 'NG';
+    if (req.query.country === 'GB') query.country = { $in: ['GB', null] };
+
     // Filter by active status
     if (status === 'active') query.isActive = true;
     if (status === 'inactive') query.isActive = false;
@@ -225,15 +238,31 @@ exports.getUsers = async (req, res) => {
 // Get pending providers (verification queue)
 exports.getVerificationQueue = async (req, res) => {
   try {
-    const providers = await User.find({
-      role: 'provider',
-      verificationStatus: 'pending',
-    })
-      .select('-password')
-      .populate('providerProfile')
-      .sort({ createdAt: 1 });
+    // Providers AND errand runners. (Runners were missing, so they could
+    // never be approved. `.populate('providerProfile')` also threw because
+    // that path doesn't exist on User.)
+    const query = { role: { $in: ['provider', 'errand_runner'] }, verificationStatus: 'pending' };
+    if (req.query.country) query.country = String(req.query.country).toUpperCase();
+    if (req.query.role) query.role = req.query.role;
 
-    res.json(providers);
+    const users = await User.find(query).select('-password').sort({ createdAt: 1 }).lean();
+    const ids = users.map((u) => u._id);
+    const [providerProfiles, runnerProfiles] = await Promise.all([
+      ProviderProfile.find({ userId: { $in: ids } }).lean(),
+      ErrandRunnerProfile.find({ userId: { $in: ids } }).select('-bankDetails').lean(),
+    ]);
+    const byUser = (list) => Object.fromEntries(list.map((p) => [String(p.userId), p]));
+    const pp = byUser(providerProfiles);
+    const rp = byUser(runnerProfiles);
+
+    res.json(
+      users.map((u) => ({
+        ...u,
+        country: u.country || 'GB',
+        providerProfile: pp[String(u._id)] || null,
+        errandRunnerProfile: rp[String(u._id)] || null,
+      }))
+    );
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -253,8 +282,8 @@ exports.verifyProvider = async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    if (user.role !== 'provider') {
-      return res.status(400).json({ message: 'User is not a provider' });
+    if (!['provider', 'errand_runner'].includes(user.role)) {
+      return res.status(400).json({ message: 'User is not a provider or errand runner' });
     }
 
     user.verificationStatus = status;
@@ -276,13 +305,25 @@ exports.verifyProvider = async (req, res) => {
       await providerProfile.save();
     }
 
+    if (user.role === 'errand_runner') {
+      await ErrandRunnerProfile.updateOne(
+        { userId: user._id },
+        { $set: { verificationStatus: status, verificationReviewedAt: new Date() } }
+      );
+      if (status === 'approved' && !user.verificationBadges?.includes('id_checked')) {
+        await User.updateOne({ _id: user._id }, { $addToSet: { verificationBadges: 'id_checked' } });
+      }
+    }
+
     // Create notification
     const notification = new Notification({
       userId: user._id,
       type: status === 'approved' ? 'provider_verified' : 'provider_rejected',
       title: status === 'approved' ? 'Account Verified' : 'Verification Failed',
       message: status === 'approved'
-        ? 'Your provider account has been verified. You can now accept bookings.'
+        ? user.role === 'errand_runner'
+          ? 'Your errand runner account has been verified. You can now accept errands.'
+          : 'Your provider account has been verified. You can now accept bookings.'
         : `Your verification was rejected: ${rejectionReason || 'Please contact support'}`,
     });
     await notification.save();
@@ -415,8 +456,11 @@ exports.getRevenueAnalytics = async (req, res) => {
         groupFormat = '%Y-%m-%d';
     }
 
+    // One currency at a time (?currency=GBP|NGN, default GBP)
+    const currency = String(req.query.currency || 'GBP').toUpperCase();
+    const currencyMatch = currency === 'GBP' ? { $in: ['GBP', null] } : currency;
     const revenue = await Payment.aggregate([
-      { $match: { status: 'succeeded' } },
+      { $match: { status: 'succeeded', currency: currencyMatch } },
       {
         $group: {
           _id: { $dateToString: { format: groupFormat, date: '$createdAt' } },

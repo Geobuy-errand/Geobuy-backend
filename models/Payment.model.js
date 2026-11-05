@@ -10,11 +10,38 @@ const paymentSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Booking',
     },
+    serviceRequestId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ServiceRequest',
+    },
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: false,
     },
+    // What the payment is for
+    type: {
+      type: String,
+      enum: ['errand', 'booking', 'connection_fee', 'subscription', 'service'],
+      default: 'errand',
+    },
+    country: {
+      type: String,
+      enum: ['GB', 'NG'],
+      default: 'GB',
+    },
+    gateway: {
+      type: String,
+      enum: ['stripe', 'paystack'],
+      default: 'stripe',
+    },
+    // Gateway reference: Stripe Checkout Session id or Paystack reference
+    reference: {
+      type: String,
+      index: true,
+      sparse: true,
+    },
+    paymentDate: Date,
     stripePaymentIntentId: {
       type: String,
       // required: true,
@@ -47,7 +74,7 @@ const paymentSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['pending', 'processing', 'succeeded', 'completed', 'failed', 'refunded', 'cancelled', 'paid'],
+      enum: ['pending', 'processing', 'succeeded', 'completed', 'failed', 'refunded', 'cancelled', 'paid', 'refund_pending'],
       default: 'pending',
     },
     isEscrow: {
@@ -57,7 +84,7 @@ const paymentSchema = new mongoose.Schema(
     // Disbursement tracking
     disbursementStatus: {
       type: String,
-      enum: ['pending', 'processing', 'completed', 'failed'],
+      enum: ['pending', 'processing', 'completed', 'failed', 'not_applicable'],
       default: 'pending',
     },
     disbursementDate: Date,

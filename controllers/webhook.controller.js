@@ -1,4 +1,9 @@
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+const SubscriptionPlan = require("../models/SubscriptionPlan.model");
+const { formatMoney, fromMinorUnits } = require("../utils/money");
+
+// Lazily required to avoid a circular import with payment.controller
+const paymentController = () => require("./payment.controller");
 const Subscription = require("../models/Subscription.model");
 const Payment = require("../models/Payment.model");
 const Transaction = require("../models/Transaction.model");
@@ -313,6 +318,19 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
     return;
   }
 
+  // Errand and connection-fee payments are handled by the same idempotent
+  // code path as the browser "verify" call and checkout.session.completed.
+  if (["errand", "connection_fee"].includes(payment.type) || type === "errand" || type === "connection_fee") {
+    await paymentController().applyVerifiedPayment(payment, {
+      paid: true,
+      amount: fromMinorUnits(paymentIntent.amount_received ?? paymentIntent.amount, paymentIntent.currency),
+      currency: String(paymentIntent.currency || "gbp").toUpperCase(),
+      paymentIntentId: paymentIntent.id,
+      reference: paymentIntent.id,
+    });
+    return;
+  }
+
   // Check if already processed
   if (payment.status === "succeeded") {
     console.log("✅ Payment already processed:", paymentId);
@@ -345,7 +363,7 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
       payment.customerId,
       "connection_fee_paid",
       "✅ Connection Fee Paid",
-      `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}.`,
+      `You have successfully paid the one-time connection fee of ${formatMoney(payment.amount, payment.currency)}.`,
       {
         paymentId: payment._id,
         connectionId: connection?._id,
@@ -423,7 +441,7 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
         payment.customerId,
         "payment_successful",
         "💰 Payment Successful",
-        `Your payment of £${payment.amount.toFixed(2)} for errand #${errand.errandId} has been confirmed.`,
+        `Your payment of ${formatMoney(payment.amount, payment?.currency || "GBP")} for errand #${errand.errandId} has been confirmed.`,
         {
           paymentId: payment._id,
           errandId: errand._id,
@@ -440,7 +458,7 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
       }).limit(20);
 
       // Notify providers via socket
-      const io = req.app?.get('io');
+      const io = null; // no request object inside a webhook handler (was a ReferenceError)
       if (io) {
         for (const provider of providers) {
           // Check if this provider was matched to this errand
@@ -509,12 +527,12 @@ async function handlePaymentIntentFailed(paymentIntent) {
   await payment.save();
 
   // Notify user
-  let notificationMessage = `Your payment of £${payment.amount.toFixed(2)} failed. Please try again.`;
+  let notificationMessage = `Your payment of ${formatMoney(payment.amount, payment?.currency || "GBP")} failed. Please try again.`;
   
   if (payment.type === "connection_fee") {
-    notificationMessage = `Your connection fee payment of £${payment.amount.toFixed(2)} failed. Please try again.`;
+    notificationMessage = `Your connection fee payment of ${formatMoney(payment.amount, payment?.currency || "GBP")} failed. Please try again.`;
   } else {
-    notificationMessage = `Your payment of £${payment.amount.toFixed(2)} for errand failed. Please try again.`;
+    notificationMessage = `Your payment of ${formatMoney(payment.amount, payment?.currency || "GBP")} for errand failed. Please try again.`;
   }
 
   await createNotification(
@@ -571,7 +589,7 @@ async function handleChargeRefunded(charge) {
     payment.customerId,
     "payment_refunded",
     "💰 Payment Refunded",
-    `Your payment of £${payment.amount.toFixed(2)} has been refunded`,
+    `Your payment of ${formatMoney(payment.amount, payment?.currency || "GBP")} has been refunded`,
     { paymentId: payment._id, amount: payment.amount }
   );
 
@@ -584,68 +602,101 @@ async function handleChargeRefunded(charge) {
 
 async function handleCheckoutSessionCompleted(session) {
   console.log("💰 Checkout session completed:", session.id);
-
   const metadata = session.metadata || {};
-  const { paymentId, userId, type } = metadata;
-  const user = await User.findById(userId);
 
-  if (!user) {
-    return console.log("User is not found");
-  }
-
-  if (!paymentId || !userId) {
-    console.error("❌ Missing paymentId or userId in metadata");
+  // ---- Subscriptions (mode=subscription) ----
+  if (session.mode === "subscription") {
+    await activateStripeSubscription(session);
     return;
   }
 
-  // Find the payment record
-  let payment = await Payment.findById(paymentId);
+  // ---- One-off payments (errands, connection fee) ----
+  const { paymentId } = metadata;
+  let payment = paymentId ? await Payment.findById(paymentId) : null;
+  if (!payment) payment = await Payment.findOne({ $or: [{ reference: session.id }, { stripeSessionId: session.id }] });
   if (!payment) {
-    console.error("❌ Payment record not found:", paymentId);
+    console.error("❌ Payment record not found for session:", session.id);
     return;
   }
 
-  // Check if already processed
-  if (payment.status === "succeeded") {
-    console.log("✅ Payment already processed:", paymentId);
-    return;
-  }
-
-  // Verify session payment status
   if (session.payment_status !== "paid") {
     console.log("⚠️ Session payment status not paid:", session.payment_status);
     return;
   }
 
-  // Update payment
-  payment.status = "succeeded";
-  payment.stripePaymentIntentId = session.payment_intent;
-  payment.paymentDate = new Date();
-  await payment.save();
-
-  // Update user
-  await User.findByIdAndUpdate(userId, {
-    hasPaidConnectionFee: true,
-    connectionFeePaidAt: new Date(),
-    connectionFeePaymentId: payment._id,
+  await paymentController().applyVerifiedPayment(payment, {
+    paid: true,
+    amount: fromMinorUnits(session.amount_total, session.currency),
+    currency: String(session.currency || "gbp").toUpperCase(),
+    paymentIntentId: session.payment_intent,
+    reference: session.id,
   });
+}
 
-  const connection = await ConnectionModel.findOne({
-    userId: userId,
-  });
+/** Create/update the local subscription when a Stripe subscription checkout completes. */
+async function activateStripeSubscription(session) {
+  const userId = session.metadata?.userId;
+  const planId = session.metadata?.planId;
+  if (!userId || !planId) {
+    console.error("❌ Missing userId or planId in subscription session metadata");
+    return;
+  }
+  const plan = await SubscriptionPlan.findById(planId);
+  if (!plan) return console.error("❌ Plan not found:", planId);
 
-  // Send notification to user
-  await createNotification(
-    userId,
-    "connection_fee_paid",
-    "✅ Connection Fee Paid",
-    `You have successfully paid the one-time connection fee of £${payment.amount.toFixed(2)}. You can now create unlimited connections.`,
-    {
-      paymentId: payment._id,
-      ...(connection && { connectionId: connection._id }),
-      amount: payment.amount,
+  let periodStart = new Date();
+  let periodEnd = new Date(Date.now() + (plan.interval === "year" ? 365 : 30) * 24 * 60 * 60 * 1000);
+  let status = "active";
+  if (session.subscription) {
+    try {
+      const sub = await stripe.subscriptions.retrieve(session.subscription);
+      status = sub.status === "trialing" ? "trialing" : sub.status === "active" ? "active" : sub.status;
+      const start = sub.current_period_start || sub.items?.data?.[0]?.current_period_start;
+      const end = sub.current_period_end || sub.items?.data?.[0]?.current_period_end;
+      if (start) periodStart = new Date(start * 1000);
+      if (end) periodEnd = new Date(end * 1000);
+    } catch (e) {
+      console.warn("Could not retrieve Stripe subscription:", e.message);
     }
+  }
+
+  const record = await Subscription.findOneAndUpdate(
+    { userId },
+    {
+      $set: {
+        userId,
+        plan: planId,
+        gateway: "stripe",
+        country: "GB",
+        currency: "GBP",
+        amount: plan.price,
+        stripeCustomerId: session.customer,
+        stripeSubscriptionId: session.subscription,
+        stripePriceId: plan.stripePriceId,
+        status,
+        currentPeriodStart: periodStart,
+        currentPeriodEnd: periodEnd,
+        cancelAtPeriodEnd: false,
+        features: plan.features || {},
+        metadata: { stripeSessionId: session.id },
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-  console.log("✅ Connection fee payment processed:", paymentId);
+  await User.findByIdAndUpdate(userId, {
+    "subscription.isSubscribed": true,
+    "subscription.subscriptionStatus": status,
+    "subscription.subscriptionPlan": plan.name,
+    "subscription.subscriptionId": String(record._id),
+    "subscription.stripeCustomerId": session.customer,
+    "subscription.gateway": "stripe",
+    "subscription.subscribedAt": new Date(),
+    "subscription.subscriptionExpiresAt": periodEnd,
+  });
+
+  await createNotification(userId, "subscription_started", "Subscription started", `Your ${plan.name} plan is now active.`, {
+    planId,
+    subscriptionId: record._id,
+  });
 }

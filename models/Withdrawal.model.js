@@ -10,16 +10,39 @@ const withdrawalSchema = new mongoose.Schema(
     amount: {
       type: Number,
       required: true,
+      min: 0.01,
     },
+    currency: {
+      type: String,
+      enum: ['GBP', 'NGN'],
+      default: 'GBP',
+    },
+    country: {
+      type: String,
+      enum: ['GB', 'NG'],
+      default: 'GB',
+    },
+    gateway: {
+      type: String,
+      enum: ['manual', 'paystack', 'stripe'],
+      default: 'manual',
+    },
+    transferCode: String, // Paystack transfer code
     status: {
       type: String,
-      enum: ['pending', 'processing', 'completed', 'failed'],
+      enum: ['pending', 'processing', 'completed', 'failed', 'rejected'],
       default: 'pending',
     },
     bankDetails: {
       bankName: String,
       sortCode: String,
       accountNumber: String,
+      bankCode: String,
+      accountName: String,
+    },
+    processedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
     },
     reference: String,
     processedAt: Date,

@@ -2,6 +2,12 @@ const express = require('express');
 const router = express.Router();
 const { authMiddleware, requireRole } = require('../middleware/auth.middleware');
 const VerificationController = require('../controllers/verification.controller');
+const { upload } = require('../middleware/upload');
+
+// Upload an identity / address document (this route was missing, so the
+// verification pages' uploads always failed)
+router.post('/upload', authMiddleware, upload.single('document'), VerificationController.uploadVerificationDocument);
+router.get('/requirements', authMiddleware, VerificationController.getRequirements);
 
 // Submit verification document
 router.post('/', authMiddleware, VerificationController.submitVerification);

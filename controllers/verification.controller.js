@@ -1,6 +1,81 @@
 const Verification = require('../models/Verification.model');
 const User = require('../models/User.model');
 const { sendTemplateEmail, providerTemplates } = require('../utils/email-templates');
+const createNotification = require('../utils/create-notification');
+const { uploadFile } = require('../middleware/upload');
+const { countryOfUser } = require('../config/countries');
+
+// Documents each country needs before an account can be reviewed.
+// UK: ID, proof of address, right to work (+ DBS for care work)
+// Nigeria: NIN slip / National ID, utility bill (proof of address)
+const REQUIRED_DOCUMENTS = {
+  GB: [['passport'], ['proofOfAddress'], ['rightToWork']],
+  NG: [['ninSlip', 'passport'], ['utilityBill', 'proofOfAddress']],
+};
+
+const ALLOWED_DOCUMENTS = [
+  'passport',
+  'proofOfAddress',
+  'rightToWork',
+  'drivingLicence',
+  'vehicleRegistration',
+  'vehicleInsurance',
+  'ninSlip',
+  'utilityBill',
+  'certification',
+  'insurance',
+  'dbs',
+];
+
+function requiredDocsFor(user) {
+  const country = countryOfUser(user);
+  const groups = [...REQUIRED_DOCUMENTS[country]];
+  if (country === 'GB' && user.renderCareServices) groups.push(['dbs']);
+  return groups;
+}
+
+function hasDoc(user, key) {
+  if (key === 'dbs') return Boolean(user.dbsDocument);
+  return Boolean(user.documents?.[key]);
+}
+
+// POST /verifications/upload  (multipart: document, documentType)
+exports.uploadVerificationDocument = async (req, res) => {
+  try {
+    const { documentType } = req.body;
+    if (!ALLOWED_DOCUMENTS.includes(documentType)) {
+      return res.status(400).json({ message: 'Unknown document type' });
+    }
+    if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+
+    const fileUrl = await uploadFile(req.file, 'geobuy/verification');
+    const user = await User.findById(req.user._id);
+    if (documentType === 'dbs') {
+      user.dbsDocument = fileUrl;
+      user.dbsStatus = 'pending';
+    } else {
+      user.documents = { ...(user.documents?.toObject?.() || user.documents || {}), [documentType]: fileUrl };
+    }
+    // A rejected user who uploads new documents can request review again
+    if (user.verificationStatus === 'rejected') user.verificationStatus = 'not_submitted';
+    await user.save();
+
+    res.json({ message: 'Document uploaded', fileUrl, documentType });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// GET /verifications/requirements — which documents this user must upload
+exports.getRequirements = async (req, res) => {
+  const user = await User.findById(req.user._id);
+  const groups = requiredDocsFor(user);
+  res.json({
+    country: countryOfUser(user),
+    required: groups.map((options) => ({ options, uploaded: options.some((k) => hasDoc(user, k)) })),
+    complete: groups.every((options) => options.some((k) => hasDoc(user, k))),
+  });
+};
 
 // Submit verification document
 exports.submitVerification = async (req, res) => {
@@ -51,24 +126,23 @@ exports.requestVerificationReview = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Already verified' });
     }
 
-    if (user.verificationStatus === 'pending') {
-      return res.status(400).json({ success: false, message: 'Verification already pending' });
+    // Check if all required documents are uploaded (country-specific)
+    const missing = requiredDocsFor(user).filter((options) => !options.some((k) => hasDoc(user, k)));
+    if (missing.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please upload all required documents before requesting verification',
+        missing: missing.map((o) => o[0]),
+      });
     }
 
-    // Check if all required documents are uploaded
-    const hasIdentity = user.documents?.passport;
-    const hasAddress = user.documents?.proofOfAddress;
-    const hasWork = user.documents?.rightToWork;
-
-    if (!hasIdentity || !hasAddress || !hasWork) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Please upload all required documents before requesting verification' 
-      });
+    if (user.verificationStatus === 'pending' && user.verificationRequestedAt) {
+      return res.status(400).json({ success: false, message: 'Verification already pending' });
     }
 
     // Update user status to pending
     user.verificationStatus = 'pending';
+    user.verificationRequestedAt = new Date();
     await user.save();
 
     // Notify admins

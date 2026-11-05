@@ -4,6 +4,77 @@ const ProviderProfile = require("../models/ProviderProfile.model");
 const Wallet = require("../models/Wallet.model");
 const ErrandRunnerProfileModel = require("../models/ErrandRunnerProfile.model");
 const { sendTemplateEmail, authTemplates } = require("../utils/email-templates");
+const { normalizeCountry, getCountry } = require("../config/countries");
+const geoService = require("../services/geoService");
+
+// ------------------------------------------------------------
+// Helpers shared by all sign-up flows
+// ------------------------------------------------------------
+const COOKIE_OPTIONS = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+});
+
+function signToken(user) {
+  // Always `userId` — the auth middleware reads this field. (Provider
+  // sign-up used to sign `id`, which logged new providers straight out.)
+  return jwt.sign(
+    { userId: user._id, email: user.email, role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRE || "7d" }
+  );
+}
+
+function cleanAddress(address = {}, country) {
+  return {
+    street: address.street,
+    area: address.area,
+    town: address.town || address.city,
+    lga: address.lga,
+    state: address.state,
+    postcode: country === "GB" ? String(address.postcode || "").toUpperCase().trim() : address.postcode,
+  };
+}
+
+function cleanBankDetails(bank = {}, country) {
+  if (!bank) return undefined;
+  if (country === "NG") {
+    return {
+      bankName: bank.bankName,
+      bankCode: bank.bankCode,
+      accountNumber: bank.accountNumber,
+      accountName: bank.accountName,
+      isVerified: false,
+    };
+  }
+  return {
+    bankName: bank.bankName,
+    sortCode: String(bank.sortCode || "").replace(/[\s-]/g, ""),
+    accountNumber: bank.accountNumber,
+  };
+}
+
+/** Coordinates for the user's home address (used for distance matching). */
+async function locationFor(address, country, coordinates) {
+  try {
+    const point = await geoService.resolvePoint({ ...address, coordinates }, country);
+    if (point) return { type: "Point", coordinates: [point.lng, point.lat] };
+  } catch (e) {
+    console.warn("Address geocoding failed at sign-up:", e.message);
+  }
+  return { type: "Point", coordinates: [0, 0] };
+}
+
+async function sendWelcome(templateFn, email, fullName) {
+  try {
+    const t = templateFn(fullName, email);
+    await sendTemplateEmail(email, t.subject, t.title, t.content, t.button);
+  } catch (e) {
+    console.warn("Welcome email failed:", e.message);
+  }
+}
 
 // Register Customer
 exports.registerCustomer = async (req, res) => {
@@ -19,20 +90,25 @@ exports.registerCustomer = async (req, res) => {
       over18,
       acceptedTerms,
       acceptedPrivacy,
+      coordinates,
     } = req.body;
+    const country = normalizeCountry(req.body.country);
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: String(email).toLowerCase() });
     if (existingUser) {
       return res.status(400).json({ message: "Email already registered" });
     }
 
+    const cleanAddr = cleanAddress(address, country);
     const user = new User({
       fullName,
       email,
       phoneNumber,
       password,
-      address,
+      country,
+      address: cleanAddr,
+      location: await locationFor(cleanAddr, country, coordinates),
       accessNeeds,
       preferredContactTime,
       over18,
@@ -44,27 +120,8 @@ exports.registerCustomer = async (req, res) => {
 
     await user.save();
 
-    // Generate JWT
-    const token = jwt.sign(
-      { userId: user._id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || "7d" }
-    );
-
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-
-    await sendTemplateEmail(
-      email,
-      authTemplates.welcomeCustomer(fullName, email).subject,
-      authTemplates.welcomeCustomer(fullName, email).title,
-      authTemplates.welcomeCustomer(fullName, email).content,
-      authTemplates.welcomeCustomer(fullName, email).button
-    );
+    res.cookie("token", signToken(user), COOKIE_OPTIONS());
+    await sendWelcome(authTemplates.welcomeCustomer, email, fullName);
 
     res.status(201).json({
       message: "Customer registered successfully",
@@ -73,6 +130,7 @@ exports.registerCustomer = async (req, res) => {
         fullName: user.fullName,
         email: user.email,
         role: user.role,
+        country: user.country,
         isVerified: user.isVerified,
       },
     });
@@ -97,12 +155,13 @@ exports.registerProvider = async (req, res) => {
       acceptedTerms,
       acceptedPrivacy,
       informationTrue,
+      coordinates,
+      nin,
     } = req.body;
-
-    console.log("📝 Registering provider:", email);
+    const country = normalizeCountry(req.body.country);
 
     // Check if user exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: String(email).toLowerCase() });
     if (existingUser) {
       return res.status(400).json({ message: "User already exists" });
     }
@@ -133,17 +192,11 @@ exports.registerProvider = async (req, res) => {
       phoneNumber,
       password,
       role: "provider",
+      country,
       dateOfBirth: new Date(dateOfBirth),
-      address: {
-        street: address.street,
-        town: address.town,
-        postcode: address.postcode,
-      },
-      bankDetails: {
-        bankName: bankDetails.bankName,
-        sortCode: bankDetails.sortCode,
-        accountNumber: bankDetails.accountNumber,
-      },
+      address: cleanAddress(address, country),
+      bankDetails: cleanBankDetails(bankDetails, country),
+      nin: country === "NG" ? nin : undefined,
       renderCareServices: renderCareServices || false,
       over18,
       acceptedTerms,
@@ -154,10 +207,7 @@ exports.registerProvider = async (req, res) => {
       isVerified: false,
       // Initialize with empty serviceCategories - they can add later in profile
       serviceCategories: [],
-      location: {
-        type: "Point",
-        coordinates: [0, 0], // Will be updated with geocoding
-      },
+      location: await locationFor(cleanAddress(address, country), country, coordinates),
     });
 
     await user.save();
@@ -181,31 +231,13 @@ exports.registerProvider = async (req, res) => {
       userId: user._id,
       balance: 0,
       totalEarned: 0,
+      currency: getCountry(country).currency,
     });
 
     await wallet.save();
 
-    // Generate JWT
-    const token = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || "7d" }
-    );
-
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-
-    await sendTemplateEmail(
-      email,
-      authTemplates.welcomeProvider(fullName, email).subject,
-      authTemplates.welcomeProvider(fullName, email).title,
-      authTemplates.welcomeProvider(fullName, email).content,
-      authTemplates.welcomeProvider(fullName, email).button
-    );
+    res.cookie("token", signToken(user), COOKIE_OPTIONS());
+    await sendWelcome(authTemplates.welcomeProvider, email, fullName);
 
     res.status(201).json({
       message: "Provider registered successfully",
@@ -216,6 +248,7 @@ exports.registerProvider = async (req, res) => {
         email: user.email,
         phoneNumber: user.phoneNumber,
         role: user.role,
+        country: user.country,
         serviceCategories: user.serviceCategories || [],
         verificationStatus: user.verificationStatus,
         isActive: user.isActive,
@@ -253,13 +286,26 @@ exports.registerErrandRunner = async (req, res) => {
       acceptedTerms,
       acceptedPrivacy,
       informationTrue,
+      coordinates,
+      nin,
     } = req.body;
+    const country = normalizeCountry(req.body.country);
+
+    if (!over18) {
+      return res.status(400).json({ message: "You must be over 18 to register" });
+    }
+    if (!acceptedTerms || !acceptedPrivacy) {
+      return res.status(400).json({ message: "Please accept the terms and privacy policy" });
+    }
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: String(email).toLowerCase() });
     if (existingUser) {
       return res.status(400).json({ message: "Email already registered" });
     }
+
+    const cleanAddr = cleanAddress(address, country);
+    const location = await locationFor(cleanAddr, country, coordinates);
 
     const user = new User({
       fullName,
@@ -267,8 +313,11 @@ exports.registerErrandRunner = async (req, res) => {
       email,
       phoneNumber,
       password,
-      address,
-      bankDetails,
+      country,
+      address: cleanAddr,
+      location,
+      bankDetails: cleanBankDetails(bankDetails, country),
+      nin: country === "NG" ? nin : undefined,
       renderCareServices,
       over18,
       acceptedTerms,
@@ -284,15 +333,15 @@ exports.registerErrandRunner = async (req, res) => {
       userId: user._id,
       dateOfBirth,
       phoneNumber,
-      address,
-      bankDetails,
+      address: cleanAddr,
+      bankDetails: cleanBankDetails(bankDetails, country),
       vehicleType: vehicleType || "walking",
       vehicleRegistration,
       vehicleInsurance,
       drivingLicence,
       maxWeightCapacity: maxWeightCapacity || 10,
       maxDistancePreference: maxDistancePreference || 10,
-      preferredAreas: preferredAreas || [address.town],
+      preferredAreas: preferredAreas || [cleanAddr.town].filter(Boolean),
       availableDays: availableDays || {
         monday: true,
         tuesday: true,
@@ -305,10 +354,7 @@ exports.registerErrandRunner = async (req, res) => {
       availableHours: availableHours || { start: "08:00", end: "18:00" },
       verificationStatus: "pending",
       verificationSubmittedAt: new Date(),
-      location: {
-        type: "Point",
-        coordinates: [0, 0],
-      },
+      location,
     });
 
     await errandRunnerProfile.save();
@@ -316,43 +362,13 @@ exports.registerErrandRunner = async (req, res) => {
     // Create wallet
     const wallet = new Wallet({
       userId: user._id,
+      currency: getCountry(country).currency,
     });
 
     await wallet.save();
 
-    // Generate JWT
-    const token = jwt.sign(
-      { userId: user._id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || "7d" }
-    );
-
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-
-    await sendTemplateEmail(
-      email,
-      authTemplates.welcomeErrandRunner(
-        fullName,
-        email
-      ).subject,
-      authTemplates.welcomeErrandRunner(
-        fullName,
-        email
-      ).title,
-      authTemplates.welcomeErrandRunner(
-        fullName,
-        email
-      ).content,
-      authTemplates.welcomeErrandRunner(
-        fullName,
-        email
-      ).button
-    );
+    res.cookie("token", signToken(user), COOKIE_OPTIONS());
+    await sendWelcome(authTemplates.welcomeErrandRunner, email, fullName);
 
     res.status(201).json({
       message: "Errand runner registered successfully. Awaiting verification.",
@@ -361,6 +377,7 @@ exports.registerErrandRunner = async (req, res) => {
         fullName: user.fullName,
         email: user.email,
         role: user.role,
+        country: user.country,
         verificationStatus: user.verificationStatus,
       },
       errandRunnerProfile,
@@ -375,11 +392,11 @@ exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email, role: { $ne: "admin" } }).select(
+    const user = await User.findOne({ email: String(email).toLowerCase(), role: { $ne: "admin" } }).select(
       "+password"
     );
     if (!user) {
-      return res.status(401).json({ message: "User does not exists" });
+      return res.status(401).json({ message: "Invalid email or password" });
     }
 
     if (!user.isActive) {
@@ -388,7 +405,7 @@ exports.login = async (req, res) => {
 
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      return res.status(401).json({ message: "Invalid email or password" });
     }
 
     // Check if provider is verified
@@ -400,19 +417,7 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Generate JWT
-    const token = jwt.sign(
-      { userId: user._id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || "7d" }
-    );
-
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie("token", signToken(user), COOKIE_OPTIONS());
 
     res.json({
       message: "Login successful",
@@ -421,6 +426,7 @@ exports.login = async (req, res) => {
         fullName: user.fullName,
         email: user.email,
         role: user.role,
+        country: user.country || "GB",
         isVerified: user.isVerified,
         verificationStatus: user.verificationStatus,
       },

@@ -27,6 +27,11 @@ const commissionSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    currency: {
+      type: String,
+      enum: ['GBP', 'NGN'],
+      default: 'GBP',
+    },
     commissionRate: {
       type: Number,
       default: 10, // percentage

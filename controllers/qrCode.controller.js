@@ -118,6 +118,18 @@ exports.scanQRCode = async (req, res) => {
       return res.status(400).json({ message: 'QR code does not match this errand' });
     }
 
+    // The token must be the one the customer's app generated. Without this
+    // check a runner could forge the QR payload and mark an errand delivered.
+    const expected = errand.qrCode?.verificationToken;
+    const supplied = String(parsedData.verificationToken || '');
+    if (
+      !expected ||
+      expected.length !== supplied.length ||
+      !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))
+    ) {
+      return res.status(400).json({ message: 'Invalid or outdated QR code. Ask the customer to show the latest code.' });
+    }
+
     // Check if QR has expired (24 hours)
     const tokenAge = Date.now() - new Date(parsedData.timestamp).getTime();
     if (tokenAge > 24 * 60 * 60 * 1000) {

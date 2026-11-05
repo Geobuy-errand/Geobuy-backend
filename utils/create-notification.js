@@ -12,45 +12,8 @@ const Notification = require('../models/Notification.model');
 const createNotification = async (userId, type, title, message, data = {}) => {
   try {
     // Validate that type is in the enum
-    const validTypes = [
-      'booking_created',
-      'booking_accepted',
-      'booking_in_progress',
-      'booking_completed',
-      'booking_cancelled',
-      'payment_successful',
-      'payment_released',
-      'payment_failed',
-      'new_message',
-      'new_offer',
-      'provider_verified',
-      'provider_rejected',
-      'review_received',
-      'withdrawal_processed',
-      'system',
-      'subscription_started',
-      'subscription_active',
-      'subscription_canceled',
-      'subscription_expired',
-      'quote_countered',
-      'quote_accepted',
-      'new_support_request',
-      'chat_created',
-      'chat_escalated',
-      'support_assigned',
-      'support_closed',
-      'document_uploaded',
-      'errand_status_updated',
-      'pickup_verified',
-      'delivery_verified',
-      'qr_code_scanned',
-      'request_completed',
-      'request_cancelled',
-      'funds_released',
-      'commission_generated',
-      'commission_paid',
-      'errand_cancelled'
-    ];
+    // Use the model's own enum so the two lists can never drift apart.
+    const validTypes = Notification.schema.path('type').enumValues;
 
     // If type is not in validTypes, use 'system' as fallback
     if (!validTypes.includes(type)) {

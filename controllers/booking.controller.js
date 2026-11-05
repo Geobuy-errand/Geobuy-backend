@@ -4,6 +4,7 @@ const Service = require('../models/Service.model');
 const Notification = require('../models/Notification.model');
 const OSRMService = require('../services/osrmService');
 const NominatimService = require('../services/nominatimService');
+const Settings = require('../models/Setting.model'); // was missing (this controller is not routed — see routes/booking.route.js)
 
 
 const getPricingSettings = async () => {

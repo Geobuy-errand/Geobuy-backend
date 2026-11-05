@@ -13,14 +13,18 @@ const errandRunnerProfileSchema = new mongoose.Schema(
     phoneNumber: String,
     address: {
       street: String,
+      area: String,
       town: String,
+      lga: String,
+      state: String,
       postcode: String,
     },
     
     // Vehicle & Transport
     vehicleType: {
       type: String,
-      enum: ['car', 'van', 'bicycle', 'motorbike', 'walking'],
+      // 'keke' = tricycle, common for errands in Nigeria
+      enum: ['car', 'van', 'bicycle', 'motorbike', 'keke', 'walking'],
       default: 'walking',
     },
     vehicleRegistration: String,
@@ -120,6 +124,9 @@ const errandRunnerProfileSchema = new mongoose.Schema(
       bankName: String,
       sortCode: String,
       accountNumber: String,
+      bankCode: String,
+      accountName: String,
+      isVerified: Boolean,
     },
     
     // About

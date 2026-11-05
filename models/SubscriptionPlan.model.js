@@ -15,14 +15,28 @@ const subscriptionPlanSchema = new mongoose.Schema(
       required: true,
       default: 'month',
     },
+    // UK price (GBP) and its Stripe price
     price: {
       type: Number,
-      required: true,
       min: 0,
+      default: 0,
     },
     stripePriceId: {
       type: String,
-      required: true,
+    },
+    // Nigeria price (NGN) and its Paystack plan (created automatically)
+    priceNGN: {
+      type: Number,
+      min: 0,
+    },
+    paystackPlanCode: {
+      type: String,
+    },
+    // Which countries can buy this plan
+    countries: {
+      type: [String],
+      enum: ['GB', 'NG'],
+      default: ['GB'],
     },
     features: {
       unlimited_errands: {

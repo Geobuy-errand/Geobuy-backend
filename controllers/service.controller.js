@@ -4,10 +4,16 @@ const Quote = require('../models/Quote.model');
 const User = require('../models/User.model');
 const ProviderProfile = require('../models/ProviderProfile.model');
 const Notification = require('../models/Notification.model');
-const OSRMService = require('../services/osrmService');
-const NominatimService = require('../services/nominatimService');
 const ServiceCategoryModel = require('../models/ServiceCategory.model');
-const createNotification = require('../utils/create-notification')
+const Commission = require('../models/Commission.model');
+const createNotification = require('../utils/create-notification');
+const geoService = require('../services/geoService');
+const pricingService = require('../services/pricingService');
+const { countryOfUser, getCountry, normalizeCountry, unitToKm, formatDistance } = require('../config/countries');
+const { formatMoney, round2 } = require('../utils/money');
+
+const same = (a, b) => a && b && String(a?._id || a) === String(b?._id || b);
+const SETTINGS_FALLBACK_COMMISSION_RATE = 10; // % — matches the existing commission default
 
 // ============================================================
 // SERVICE CRUD FUNCTIONS
@@ -16,8 +22,15 @@ const createNotification = require('../utils/create-notification')
 // Get all services
 exports.getServices = async (req, res) => {
   try {
-    const services = await Service.find({ isActive: true })
-      .select('name category description basePrice pricePerKm estimatedTime icon isPopular')
+    // ?country=NG lists services offered in Nigeria (older services have no
+    // `countries` field and are treated as available everywhere)
+    const query = { isActive: true };
+    if (req.query.country) {
+      const c = String(req.query.country).toUpperCase();
+      query.$or = [{ countries: c }, { countries: { $exists: false } }, { countries: { $size: 0 } }];
+    }
+    const services = await Service.find(query)
+      .select('name category description basePrice pricePerKm pricesNG countries estimatedTime icon isPopular requiresDBS isActive minPrice maxPrice')
       .sort({ isPopular: -1, name: 1 });
 
     res.json(services);
@@ -58,9 +71,13 @@ exports.createService = async (req, res) => {
       requiresDBS,
       serviceAreas,
       restrictions,
+      countries,
+      pricesNG,
     } = req.body;
 
     const service = new Service({
+      countries: Array.isArray(countries) && countries.length ? countries : ['GB', 'NG'],
+      pricesNG: pricesNG || undefined,
       name,
       category,
       description,
@@ -172,18 +189,33 @@ exports.createServiceRequest = async (req, res) => {
       invitedProviders,
     } = req.body;
 
-    // Get settings for service fee
-    const settings = await Settings.getSettings();
-    const SERVICE_FEE = settings.pricing?.baseFee || 3.99;
-    const PLATFORM_FEE_PERCENTAGE = settings.pricing?.platformFeePercentage || 20;
+    const country = countryOfUser(req.user);
+    const pricing = await pricingService.getPricing(country);
+    const SERVICE_FEE = 0; // providers are paid directly; Geobuy invoices commission
+    const PLATFORM_FEE_PERCENTAGE = pricing.platformFeePercentage;
+
+    if (!category || !serviceType || !description) {
+      return res.status(400).json({ message: 'Category, service type and description are required' });
+    }
+
+    // Make sure the job location has real coordinates inside the customer's country.
+    let resolvedLocation = location || {};
+    try {
+      const point = await geoService.resolvePoint(location || req.user.address || {}, country);
+      if (point) resolvedLocation = { ...resolvedLocation, coordinates: { lat: point.lat, lng: point.lng } };
+    } catch (e) {
+      console.warn('Service request geocoding failed:', e.message);
+    }
 
     // Create service request
     const serviceRequest = new ServiceRequest({
       customerId: req.user._id,
+      country,
+      currency: getCountry(country).currency,
       category,
       serviceType,
       description,
-      location,
+      location: resolvedLocation,
       preferredDate,
       preferredTime,
       budget,
@@ -203,9 +235,10 @@ exports.createServiceRequest = async (req, res) => {
     let invitedCount = 0;
     if (invitedProviders && invitedProviders.length > 0) {
       for (const providerId of invitedProviders) {
-        // Check if provider exists and is valid
+        // Check if provider exists, is approved and works in the same country
         const provider = await User.findById(providerId);
-        if (!provider || provider.role !== 'provider') continue;
+        if (!provider || provider.role !== 'provider' || provider.verificationStatus !== 'approved') continue;
+        if (countryOfUser(provider) !== country) continue;
 
         // Add to invited providers
         if (!serviceRequest.invitedProviders) {
@@ -293,13 +326,21 @@ exports.inviteProviders = async (req, res) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
+    if (['completed', 'cancelled', 'expired'].includes(serviceRequest.status)) {
+      return res.status(400).json({ message: 'This request is closed' });
+    }
+
     // Add invited providers
     let invitedCount = 0;
-    for (const providerId of providerIds) {
+    const requestCountry = normalizeCountry(serviceRequest.country);
+    for (const providerId of providerIds || []) {
       const existing = serviceRequest.invitedProviders?.find(
-        p => p.providerId.toString() === providerId
+        p => String(p.providerId) === String(providerId)
       );
-      
+      const provider = await User.findById(providerId).select('role verificationStatus country');
+      if (!provider || provider.role !== 'provider' || provider.verificationStatus !== 'approved') continue;
+      if (countryOfUser(provider) !== requestCountry) continue;
+
       if (!existing) {
         if (!serviceRequest.invitedProviders) {
           serviceRequest.invitedProviders = [];
@@ -313,14 +354,13 @@ exports.inviteProviders = async (req, res) => {
         invitedCount++;
 
         // Notify provider
-        const notification = new Notification({
-          userId: providerId,
-          type: 'new_service_request',
-          title: '📋 Service Request Invitation',
-          message: `You've been invited to quote for a ${serviceRequest.category} service`,
-          data: { serviceRequestId: serviceRequest._id },
-        });
-        await notification.save();
+        await createNotification(
+          providerId,
+          'new_service_request',
+          '📋 Service Request Invitation',
+          `You've been invited to quote for a ${serviceRequest.category} service`,
+          { serviceRequestId: serviceRequest._id }
+        );
 
         // Emit socket event
         const io = req.app.get('io');
@@ -363,9 +403,18 @@ exports.submitQuote = async (req, res) => {
       availabilityEnd,
     } = req.body;
 
+    const quoteAmount = round2(parseFloat(amount));
+    if (!Number.isFinite(quoteAmount) || quoteAmount <= 0) {
+      return res.status(400).json({ message: 'Please enter a valid quote amount' });
+    }
+
     const serviceRequest = await ServiceRequest.findById(serviceRequestId);
     if (!serviceRequest) {
       return res.status(404).json({ message: 'Service request not found' });
+    }
+
+    if (!['pending', 'quotes_received', 'negotiating'].includes(serviceRequest.status)) {
+      return res.status(400).json({ message: 'This request is no longer accepting quotes' });
     }
 
     // Check if provider was invited
@@ -390,7 +439,7 @@ exports.submitQuote = async (req, res) => {
     const quote = new Quote({
       serviceRequestId,
       providerId: req.user._id,
-      amount,
+      amount: quoteAmount,
       message,
       estimatedDuration,
       availability: {
@@ -409,7 +458,7 @@ exports.submitQuote = async (req, res) => {
     );
     if (inviteIndex !== -1 && inviteIndex !== undefined) {
       serviceRequest.invitedProviders[inviteIndex].quote = {
-        amount: amount,
+        amount: quoteAmount,
         message: message,
         estimatedDuration: estimatedDuration,
         submittedAt: new Date(),
@@ -423,7 +472,7 @@ exports.submitQuote = async (req, res) => {
       serviceRequest.customerId,
       'quote_received',
       '💰 New Quote Received',
-      `${req.user.fullName} has submitted a quote of £${amount} for your service request`,
+      `${req.user.fullName} has submitted a quote of ${formatMoney(quoteAmount, serviceRequest.currency)} for your service request`,
       { 
         serviceRequestId: serviceRequest._id, 
         quoteId: quote._id,
@@ -520,8 +569,17 @@ exports.negotiateQuote = async (req, res) => {
     // Determine who is sending the counter-offer
     const from = isCustomer ? 'customer' : 'provider';
 
+    const offer = round2(parseFloat(counterAmount));
+    if (!Number.isFinite(offer) || offer <= 0) {
+      return res.status(400).json({ message: 'Please enter a valid amount' });
+    }
+    if (!['pending', 'quotes_received', 'negotiating'].includes(serviceRequest.status) || quote.status !== 'pending') {
+      return res.status(400).json({ message: 'This quote can no longer be negotiated' });
+    }
+    const currency = serviceRequest.currency || 'GBP';
+
     // Update quote
-    quote.amount = counterAmount;
+    quote.amount = offer;
     quote.status = 'pending';
     quote.message = message || quote.message;
     await quote.save();
@@ -533,8 +591,9 @@ exports.negotiateQuote = async (req, res) => {
     serviceRequest.negotiationHistory.push({
       from,
       userId: req.user._id,
-      message: message || `${from} offered £${counterAmount}`,
-      offerAmount: counterAmount,
+      message: message || `${from} offered ${formatMoney(offer, currency)}`,
+      offerAmount: offer,
+      quoteId: quote._id,
       status: 'countered',
     });
     serviceRequest.status = 'negotiating';
@@ -548,7 +607,7 @@ exports.negotiateQuote = async (req, res) => {
       recipientId,
       'quote_countered',
       '🔄 Counter-Offer Received',
-      `${senderName} has made a counter-offer of £${counterAmount}`,
+      `${senderName} has made a counter-offer of ${formatMoney(offer, currency)}`,
       { 
         serviceRequestId: serviceRequest._id, 
         quoteId: quote._id,
@@ -584,8 +643,8 @@ exports.negotiateQuote = async (req, res) => {
 // Accept quote
 exports.acceptQuote = async (req, res) => {
   try {
-    const { quoteId, finalPrice } = req.body;
-    const quote = await Quote.findById(quoteId);
+    const { quoteId } = req.body;
+    const quote = await Quote.findById(quoteId).populate('providerId', 'fullName email');
     if (!quote) {
       return res.status(404).json({ message: 'Quote not found' });
     }
@@ -595,62 +654,83 @@ exports.acceptQuote = async (req, res) => {
       return res.status(404).json({ message: 'Service request not found' });
     }
 
-    if (serviceRequest.customerId.toString() !== req.user._id.toString()) {
+    if (!same(serviceRequest.customerId, req.user._id)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    // Update quote
+    if (!['pending', 'quotes_received', 'negotiating'].includes(serviceRequest.status)) {
+      return res.status(400).json({ message: 'A provider has already been selected or this request is closed' });
+    }
+    if (quote.status !== 'pending') {
+      return res.status(400).json({ message: 'This quote is no longer available' });
+    }
+
+    // The customer can't accept their own counter-offer — the provider must respond first.
+    const lastForQuote = [...(serviceRequest.negotiationHistory || [])]
+      .reverse()
+      .find((h) => h.quoteId && same(h.quoteId, quote._id));
+    if (lastForQuote?.from === 'customer') {
+      return res.status(400).json({ message: 'Waiting for the provider to respond to your counter-offer' });
+    }
+
+    // The agreed price is the quote's current amount. A client-sent
+    // `finalPrice` is ignored (it used to let the customer set any price).
+    const finalPrice = quote.amount;
+    const providerId = quote.providerId._id;
+
+    // Atomically claim the request so two quotes can't both be accepted.
+    const claimed = await ServiceRequest.findOneAndUpdate(
+      { _id: serviceRequest._id, status: { $in: ['pending', 'quotes_received', 'negotiating'] } },
+      {
+        $set: {
+          selectedProviderId: providerId,
+          selectedQuoteId: quote._id,
+          finalPrice,
+          status: 'provider_selected',
+        },
+      },
+      { new: true }
+    );
+    if (!claimed) return res.status(409).json({ message: 'This request was updated. Please refresh.' });
+
     quote.status = 'accepted';
     quote.isSelected = true;
+    quote.selectedAt = new Date();
     await quote.save();
 
-    // Update service request
-    serviceRequest.selectedProviderId = quote.providerId;
-    serviceRequest.selectedQuoteId = quote._id;
-    serviceRequest.finalPrice = finalPrice || quote.amount;
-    serviceRequest.status = 'provider_selected';
-    await serviceRequest.save();
-
-    // Notify provider using helper
-    await createNotification(
-      quote.providerId,
-      'quote_accepted',
-      '🎉 Quote Accepted!',
-      `Your quote of £${finalPrice || quote.amount} has been accepted for ${serviceRequest.serviceType}`,
-      { 
-        serviceRequestId: serviceRequest._id,
-        customerId: req.user._id,
-        customerName: req.user.fullName,
-        finalPrice: finalPrice || quote.amount,
-      }
+    // Close the other quotes
+    await Quote.updateMany(
+      { serviceRequestId: serviceRequest._id, _id: { $ne: quote._id }, status: 'pending' },
+      { $set: { status: 'rejected' } }
     );
 
-    // Notify customer using helper
+    const price = formatMoney(finalPrice, claimed.currency);
+    await createNotification(
+      providerId,
+      'quote_accepted',
+      '🎉 Quote Accepted!',
+      `Your quote of ${price} has been accepted for ${claimed.serviceType}`,
+      { serviceRequestId: claimed._id, customerId: req.user._id, customerName: req.user.fullName, finalPrice }
+    );
+
     await createNotification(
       req.user._id,
       'service_request_accepted',
-      '✅ Service Request Accepted',
-      `Your service request has been accepted by ${quote.providerId.fullName || 'the provider'}`,
-      { 
-        serviceRequestId: serviceRequest._id,
-        providerId: quote.providerId,
-        finalPrice: finalPrice || quote.amount,
-      }
+      '✅ Provider booked',
+      `You booked ${quote.providerId.fullName || 'the provider'} for ${price}`,
+      { serviceRequestId: claimed._id, providerId, finalPrice }
     );
 
-    // Emit socket event
     const io = req.app.get('io');
     if (io) {
-      io.to(`booking_${serviceRequest._id}`).emit('quote-accepted', {
-        serviceRequestId: serviceRequest._id,
-        providerId: quote.providerId,
-        amount: finalPrice || quote.amount,
-      });
+      const payload = { serviceRequestId: claimed._id, providerId, amount: finalPrice, currency: claimed.currency };
+      io.to(`booking_${claimed._id}`).emit('quote-accepted', payload);
+      io.to(`user_${providerId}`).emit('quote-accepted', payload);
     }
 
     res.json({
       message: 'Quote accepted successfully',
-      serviceRequest,
+      serviceRequest: claimed,
     });
   } catch (error) {
     console.error('❌ Accept quote error:', error);
@@ -746,9 +826,7 @@ exports.getServiceRequestById = async (req, res) => {
     if (serviceRequest.customerId._id.toString() !== req.user._id.toString() && 
         req.user.role !== 'admin') {
       // Check if user is an invited provider
-      const isInvited = serviceRequest.invitedProviders?.some(
-        p => p.providerId._id.toString() === req.user._id.toString()
-      );
+      const isInvited = serviceRequest.invitedProviders?.some((p) => same(p.providerId, req.user._id));
       if (!isInvited) {
         return res.status(403).json({ message: 'Access denied' });
       }
@@ -820,8 +898,8 @@ exports.cancelServiceRequest = async (req, res) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    if (serviceRequest.status === 'completed') {
-      return res.status(400).json({ message: 'Cannot cancel a completed request' });
+    if (['completed', 'cancelled'].includes(serviceRequest.status)) {
+      return res.status(400).json({ message: `Request is already ${serviceRequest.status}` });
     }
 
     serviceRequest.status = 'cancelled';
@@ -831,14 +909,13 @@ exports.cancelServiceRequest = async (req, res) => {
 
     // Notify selected provider if any
     if (serviceRequest.selectedProviderId) {
-      const notification = new Notification({
-        userId: serviceRequest.selectedProviderId,
-        type: 'request_cancelled',
-        title: 'Service Request Cancelled',
-        message: `Service request #${serviceRequest.requestId} has been cancelled`,
-        data: { serviceRequestId: serviceRequest._id },
-      });
-      await notification.save();
+      await createNotification(
+        serviceRequest.selectedProviderId,
+        'request_cancelled',
+        'Service Request Cancelled',
+        `Service request #${serviceRequest.requestId} has been cancelled`,
+        { serviceRequestId: serviceRequest._id }
+      );
     }
 
     res.json({
@@ -871,16 +948,39 @@ exports.completeServiceRequest = async (req, res) => {
     serviceRequest.completedAt = new Date();
     await serviceRequest.save();
 
+    // Providers are paid directly by the customer, so Geobuy invoices its
+    // commission automatically when the job is completed.
+    if (serviceRequest.selectedProviderId && serviceRequest.finalPrice > 0) {
+      try {
+        const exists = await Commission.findOne({ serviceRequestId: serviceRequest._id });
+        if (!exists) {
+          const rate = SETTINGS_FALLBACK_COMMISSION_RATE;
+          await Commission.create({
+            providerId: serviceRequest.selectedProviderId,
+            serviceRequestId: serviceRequest._id,
+            amount: serviceRequest.finalPrice,
+            currency: serviceRequest.currency || 'GBP',
+            commissionRate: rate,
+            commissionAmount: round2((serviceRequest.finalPrice * rate) / 100),
+            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            status: 'pending',
+            notes: 'Auto-generated on completion',
+          });
+        }
+      } catch (e) {
+        console.warn('Commission auto-generation failed:', e.message);
+      }
+    }
+
     // Notify provider
     if (serviceRequest.selectedProviderId) {
-      const notification = new Notification({
-        userId: serviceRequest.selectedProviderId,
-        type: 'request_completed',
-        title: 'Service Request Completed',
-        message: `Service request #${serviceRequest.requestId} has been marked as completed`,
-        data: { serviceRequestId: serviceRequest._id },
-      });
-      await notification.save();
+      await createNotification(
+        serviceRequest.selectedProviderId,
+        'request_completed',
+        'Service Request Completed',
+        `Service request #${serviceRequest.requestId} has been marked as completed`,
+        { serviceRequestId: serviceRequest._id }
+      );
     }
 
     res.json({
@@ -902,7 +1002,7 @@ exports.startServiceRequest = async (req, res) => {
     }
 
     // Check if user is the selected provider
-    if (serviceRequest.selectedProviderId.toString() !== req.user._id.toString()) {
+    if (!same(serviceRequest.selectedProviderId, req.user._id)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -913,15 +1013,15 @@ exports.startServiceRequest = async (req, res) => {
     serviceRequest.status = 'in_progress';
     await serviceRequest.save();
 
-    // Notify customer
-    const notification = new Notification({
-      userId: serviceRequest.customerId,
-      type: 'request_started',
-      title: 'Service Started',
-      message: `${req.user.fullName} has started working on your service request`,
-      data: { serviceRequestId: serviceRequest._id },
-    });
-    await notification.save();
+    // Notify customer ('request_started' was missing from the enum, which
+    // made this endpoint fail after the status was already saved)
+    await createNotification(
+      serviceRequest.customerId,
+      'request_started',
+      'Service Started',
+      `${req.user.fullName} has started working on your service request`,
+      { serviceRequestId: serviceRequest._id }
+    );
 
     res.json({
       message: 'Service started',
@@ -1041,108 +1141,116 @@ exports.deleteServiceCategory = async (req, res) => {
 // ============================================================
 
 // Get service providers with filters
+// ============================================================
+// PROVIDER SEARCH & MATCHING (UK + Nigeria)
+// Distances: computed in km, returned in the country's unit
+// (miles for the UK, km for Nigeria) with a ready-made `distanceText`.
+// ============================================================
+
+/** Build the Mongo filter for a category (uses admin-managed subcategories). */
+async function categoryFilter(category) {
+  if (!category) return null;
+  const categoryDoc = await ServiceCategoryModel.findOne({ name: String(category).toLowerCase(), isActive: true });
+  if (categoryDoc?.subCategories?.length) {
+    return { $in: [...categoryDoc.subCategories, categoryDoc.name] };
+  }
+  return category;
+}
+
+/** Score 0–100: closer, better rated and better verified providers rank higher. */
+function calculateMatchScore(provider, distanceKm, { requiresDBS, requiresCertification, isUrgent } = {}) {
+  let score = 60;
+  if (distanceKm !== null && distanceKm !== undefined) {
+    // Lose up to 35 points over the first 25 km
+    score -= Math.min(35, (distanceKm / 25) * 35);
+  }
+  if (provider.averageRating) score += provider.averageRating * 4;
+  const badges = provider.verificationBadges || [];
+  if (badges.includes('id_checked')) score += 5;
+  if (badges.includes('insured')) score += 5;
+  if (badges.includes('certified')) score += requiresCertification ? 10 : 5;
+  if (badges.includes('dbs_checked')) score += requiresDBS ? 10 : 5;
+  if (isUrgent && provider.isAvailable) score += 5;
+  return Math.round(Math.max(0, Math.min(100, score)));
+}
+
+/** Rank providers by road distance from a point and attach distance fields. */
+async function rankProviders(providers, origin, country, extra = {}) {
+  const origins = providers.map((p) => geoService.pointFromGeoJSON(p.location));
+  const routes = origin ? await geoService.getDistancesFrom(origin, origins, { country }) : providers.map(() => null);
+  return providers
+    .map((p, i) => {
+      const obj = p.toObject ? p.toObject() : p;
+      const r = routes[i];
+      return {
+        ...obj,
+        distance: r ? round2(r.distanceKm / (getCountry(country).distanceUnit === 'mi' ? 1.609344 : 1)) : null,
+        distanceKm: r ? r.distanceKm : null,
+        distanceUnit: getCountry(country).distanceUnit,
+        distanceText: r ? r.distanceText : null,
+        travelTime: r ? r.durationText : null,
+        matchScore: calculateMatchScore(obj, r ? r.distanceKm : null, extra),
+      };
+    })
+    .sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+}
+
+// GET /services/providers?category=&lat=&lng=&radius=&country=
+// `radius` is in the country's unit (miles for UK, km for Nigeria).
 exports.getServiceProviders = async (req, res) => {
   try {
-    const { 
-      category, 
-      dbsChecked, 
-      insured, 
-      rated, 
-      lat, 
-      lng, 
-      radius, 
-      limit = 20 
-    } = req.query;
-    
-    
-    let query = {
+    const { category, dbsChecked, insured, lat, lng, radius, limit = 20 } = req.query;
+
+    const latNum = parseFloat(lat);
+    const lngNum = parseFloat(lng);
+    const hasPoint = Number.isFinite(latNum) && Number.isFinite(lngNum) && !(latNum === 0 && lngNum === 0);
+    const { countryFromCoordinates } = require('../config/countries');
+    const country = normalizeCountry(
+      req.query.country || req.user?.country || (hasPoint ? countryFromCoordinates(latNum, lngNum) : null)
+    );
+
+    const query = {
       role: 'provider',
       isActive: true,
       verificationStatus: 'approved',
     };
+    // Accounts created before Nigeria support have no country (treated as UK)
+    if (country === 'GB') query.$or = [{ country: 'GB' }, { country: { $exists: false } }];
+    else query.country = country;
 
-    // CATEGORY MATCHING - FIXED
-    if (category) {
-      
-      // Try to find the category in the database
-      const categoryDoc = await ServiceCategoryModel.findOne({ 
-        name: category.toLowerCase(),
-        isActive: true 
-      });
-      
-      
-      if (categoryDoc && categoryDoc.subCategories && categoryDoc.subCategories.length > 0) {
-        // Use the subcategories from the database
-        query.serviceCategories = { $in: categoryDoc.subCategories };
-      } else if (categoryDoc) {
-        // If no subcategories, use the category name itself
-        query.serviceCategories = category;
-      } else {
-        // If category not found in ServiceCategory collection, 
-        // check if any provider has this as a direct category
-        query.serviceCategories = category;
-      }
-    }
+    const cat = await categoryFilter(category);
+    if (cat) query.serviceCategories = cat;
 
-    // ============================================================
-    // FILTERS
-    // ============================================================
-    if (dbsChecked === 'true') {
-      query['verificationBadges'] = 'dbs_checked';
-    }
+    const badges = [];
+    if (dbsChecked === 'true') badges.push('dbs_checked');
+    if (insured === 'true') badges.push('insured');
+    if (badges.length) query.verificationBadges = { $all: badges };
 
-    if (insured === 'true') {
-      query['verificationBadges'] = 'insured';
-    }
+    const cap = Math.min(parseInt(limit, 10) || 20, 50);
+    let providers;
 
-    // ============================================================
-    // LOCATION - FIXED to handle null/undefined
-    // ============================================================
-    const latNum = parseFloat(lat);
-    const lngNum = parseFloat(lng);
-    
-    if (!isNaN(latNum) && !isNaN(lngNum)) {
-      query['location'] = {
+    if (hasPoint) {
+      const radiusKm = unitToKm(parseFloat(radius) || (country === 'NG' ? 15 : 10), country);
+      // $near can't be combined with $or, so filter country after the geo query.
+      const geoQuery = { ...query };
+      delete geoQuery.$or;
+      if (country === 'GB') geoQuery.country = { $in: ['GB', null] };
+      geoQuery.location = {
         $near: {
-          $geometry: {
-            type: 'Point',
-            coordinates: [lngNum, latNum],
-          },
-          $maxDistance: (parseFloat(radius) || 10) * 1000, // Convert km to meters
+          $geometry: { type: 'Point', coordinates: [lngNum, latNum] },
+          $maxDistance: radiusKm * 1000,
         },
       };
+      providers = await User.find(geoQuery)
+        .select('fullName address.town address.state averageRating totalReviews verificationBadges serviceCategories serviceRates about location country isAvailable')
+        .limit(cap);
+      providers = await rankProviders(providers, { lat: latNum, lng: lngNum }, country);
     } else {
-    }
-
-
-    // ============================================================
-    // EXECUTE QUERY
-    // ============================================================
-    let providers = await User.find(query)
-      .select('fullName email phoneNumber address averageRating totalReviews verificationBadges serviceCategories serviceRates about location')
-      .limit(parseInt(limit));
-
-
-    // ============================================================
-    // ADD DISTANCE AND MATCH SCORE (if location provided)
-    // ============================================================
-    if (!isNaN(latNum) && !isNaN(lngNum)) {
-      providers = providers.map(provider => {
-        const providerLocation = provider.location?.coordinates || [0, 0];
-        const distance = calculateDistance(
-          latNum,
-          lngNum,
-          providerLocation[1],
-          providerLocation[0]
-        );
-        return {
-          ...provider.toObject(),
-          distance: distance,
-          matchScore: calculateMatchScore(provider, distance),
-        };
-      });
-
-      providers.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+      providers = await User.find(query)
+        .select('fullName address.town address.state averageRating totalReviews verificationBadges serviceCategories serviceRates about location country isAvailable')
+        .sort({ averageRating: -1 })
+        .limit(cap);
+      providers = providers.map((p) => ({ ...p.toObject(), distance: null, distanceText: null, matchScore: calculateMatchScore(p, null) }));
     }
 
     res.json(providers);
@@ -1152,242 +1260,70 @@ exports.getServiceProviders = async (req, res) => {
   }
 };
 
-// Helper: Find nearby providers (UPDATED to use dynamic categories)
-async function findNearbyProviders(request, limit = 5) {
-  const { category, location, requiresDBS, requiresCertification } = request;
-  
-  let query = {
-    role: 'provider',
-    isActive: true,
-    verificationStatus: 'approved',
-  };
-
-  // Get subcategories from database
-  if (category) {
-    const categoryDoc = await ServiceCategoryModel.findOne({ 
-      name: category,
-      isActive: true 
-    });
-    
-    if (categoryDoc && categoryDoc.subCategories && categoryDoc.subCategories.length > 0) {
-      query.serviceCategories = { $in: categoryDoc.subCategories };
-    } else if (categoryDoc) {
-      query.serviceCategories = category;
-    } else {
-      query.serviceCategories = category;
-    }
-  }
-
-  if (requiresDBS) {
-    query['verificationBadges'] = 'dbs_checked';
-  }
-
-  if (requiresCertification) {
-    query['verificationBadges'] = 'certified';
-  }
-
-  if (location?.coordinates?.lat && location?.coordinates?.lng) {
-    query['location'] = {
-      $near: {
-        $geometry: {
-          type: 'Point',
-          coordinates: [location.coordinates.lng, location.coordinates.lat],
-        },
-        $maxDistance: 20000,
-      },
-    };
-  }
-
-  let providers = await User.find(query)
-    .select('fullName email phoneNumber address averageRating totalReviews verificationBadges serviceCategories serviceRates about location')
-    .limit(limit * 2);
-
-  const matched = providers.map(provider => {
-    const providerLocation = provider.location?.coordinates || [0, 0];
-    const distance = location?.coordinates?.lat && location?.coordinates?.lng
-      ? calculateDistance(
-          location.coordinates.lat,
-          location.coordinates.lng,
-          providerLocation[1],
-          providerLocation[0]
-        )
-      : null;
-
-    return {
-      ...provider.toObject(),
-      distance: distance,
-      matchScore: calculateMatchScore(provider, distance),
-    };
-  });
-
-  matched.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
-  return matched.slice(0, limit);
-}
-
-// ============================================================
-// GET MATCHED PROVIDERS (UPDATED to use dynamic categories)
-// ============================================================
-
+// GET /services/request/:requestId/matches
 exports.getMatchedProviders = async (req, res) => {
   try {
-    const { requestId } = req.params;
-    
-    const serviceRequest = await ServiceRequest.findById(requestId);
+    const serviceRequest = await ServiceRequest.findById(req.params.requestId);
     if (!serviceRequest) {
       return res.status(404).json({ message: 'Service request not found' });
     }
 
-    // Check authorization
-    if (serviceRequest.customerId.toString() !== req.user._id.toString() && 
-        req.user.role !== 'admin') {
+    if (!same(serviceRequest.customerId, req.user._id) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    // Get subcategories from database
-    const category = serviceRequest.category;
-    let subCategories = [category];
-    
-    if (category) {
-      const categoryDoc = await ServiceCategoryModel.findOne({ 
-        name: category,
-        isActive: true 
-      });
-      
-      if (categoryDoc && categoryDoc.subCategories && categoryDoc.subCategories.length > 0) {
-        subCategories = categoryDoc.subCategories;
-      }
-    }
+    const country = normalizeCountry(serviceRequest.country);
+    const cat = await categoryFilter(serviceRequest.category);
 
-    // Find providers that match this request
-    const requiresDBS = serviceRequest.requiresDBS;
-    const requiresCertification = serviceRequest.requiresCertification;
-    
-    const providerProfiles = await ProviderProfile.find({
-      serviceCategories: { $in: subCategories },
-      isVerified: true,
+    // Providers whose profile OR account lists a matching category
+    const profileFilter = { isVerified: true };
+    if (cat) profileFilter.serviceCategories = cat;
+    const profiles = await ProviderProfile.find(profileFilter);
+    const profileIds = profiles.map((p) => p.userId);
+
+    const userQuery = {
+      role: 'provider',
+      isActive: true,
+      isAvailable: { $ne: false },
+      verificationStatus: 'approved',
+      $and: [
+        country === 'GB' ? { $or: [{ country: 'GB' }, { country: { $exists: false } }] } : { country },
+        cat ? { $or: [{ _id: { $in: profileIds } }, { serviceCategories: cat }] } : {},
+      ],
+    };
+
+    const users = await User.find(userQuery)
+      .select('fullName email phoneNumber averageRating totalReviews verificationBadges location isAvailable')
+      .limit(50);
+
+    const origin = geoService.toPoint(serviceRequest.location?.coordinates);
+    const ranked = await rankProviders(users, origin, country, {
+      requiresDBS: serviceRequest.requiresDBS,
+      requiresCertification: serviceRequest.requiresCertification,
+      isUrgent: serviceRequest.isUrgent,
     });
 
-    const providerIds = providerProfiles.map(p => p.userId);
-    
-    let matchedProviders = [];
-    
-    if (providerIds.length > 0) {
-      const users = await User.find({
-        _id: { $in: providerIds },
-        isActive: true,
-        isAvailable: true,
-        verificationStatus: 'approved',
-      });
-
-      matchedProviders = await Promise.all(users.map(async (user) => {
-        const profile = providerProfiles.find(p => p.userId.toString() === user._id.toString());
-        
-        let matchScore = 50;
-        
-        if (profile?.serviceCategories?.some(cat => subCategories.includes(cat))) {
-          matchScore += 20;
-        }
-        
-        if (requiresDBS && profile?.dbsChecked) {
-          matchScore += 15;
-        } else if (requiresDBS) {
-          matchScore -= 10;
-        }
-        
-        if (requiresCertification && profile?.certifications?.length > 0) {
-          matchScore += 15;
-        } else if (requiresCertification) {
-          matchScore -= 10;
-        }
-        
-        if (serviceRequest.isUrgent) {
-          matchScore += 5;
-        }
-        
-        if (user.averageRating) {
-          matchScore += user.averageRating * 2;
-        }
-        
-        let distance = null;
-        if (serviceRequest.location?.coordinates?.lat && serviceRequest.location?.coordinates?.lng) {
-          try {
-            const distanceResult = await OSRMService.getDistance(
-              serviceRequest.location.coordinates.lat,
-              serviceRequest.location.coordinates.lng,
-              user.location?.coordinates?.[1] || 51.5074,
-              user.location?.coordinates?.[0] || -0.1276
-            );
-            distance = distanceResult.distance.value;
-            
-            if (distance < 5) matchScore += 20;
-            else if (distance < 10) matchScore += 10;
-            else if (distance < 20) matchScore += 5;
-            else matchScore -= 5;
-          } catch (error) {
-            console.warn('Distance calculation failed:', error.message);
-          }
-        }
-        
-        return {
-          providerId: user._id,
-          fullName: user.fullName,
-          email: user.email,
-          phoneNumber: user.phoneNumber,
-          averageRating: user.averageRating,
-          totalReviews: user.totalReviews,
-          matchScore: Math.max(0, Math.min(100, matchScore)),
-          distance: distance,
-          profile: profile,
-          about: profile?.about || '',
-          verificationBadges: user.verificationBadges || [],
-        };
-      }));
-
-      matchedProviders.sort((a, b) => b.matchScore - a.matchScore);
-    }
-
-    res.json({
-      matchedProviders,
-      total: matchedProviders.length,
+    const matchedProviders = ranked.map((u) => {
+      const profile = profiles.find((p) => same(p.userId, u._id));
+      return {
+        providerId: u._id,
+        fullName: u.fullName,
+        averageRating: u.averageRating,
+        totalReviews: u.totalReviews,
+        matchScore: u.matchScore,
+        distance: u.distance,
+        distanceText: u.distanceText,
+        distanceUnit: u.distanceUnit,
+        travelTime: u.travelTime,
+        profile,
+        about: profile?.about || '',
+        verificationBadges: u.verificationBadges || [],
+      };
     });
+
+    res.json({ matchedProviders, total: matchedProviders.length });
   } catch (error) {
     console.error('Get matched providers error:', error);
     res.status(500).json({ message: error.message });
   }
 };
-
-
-
-
-// Helper: Calculate distance between two points (Haversine formula)
-function calculateDistance(lat1, lon1, lat2, lon2) {
-  const R = 6371; // Earth's radius in km
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = 
-    Math.sin(dLat/2) * Math.sin(dLat/2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon/2) * Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-}
-
-// Helper: Calculate match score
-function calculateMatchScore(provider, distance) {
-  let score = 100;
-  
-  if (distance) {
-    score -= Math.min(distance * 2, 30);
-  }
-  
-  if (provider.averageRating) {
-    score += provider.averageRating * 5;
-  }
-  
-  if (provider.verificationBadges?.includes('dbs_checked')) score += 10;
-  if (provider.verificationBadges?.includes('insured')) score += 10;
-  if (provider.verificationBadges?.includes('certified')) score += 10;
-  if (provider.verificationBadges?.includes('id_checked')) score += 5;
-  
-  return Math.max(0, Math.min(100, score));
-}

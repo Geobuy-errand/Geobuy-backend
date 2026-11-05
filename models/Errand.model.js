@@ -15,6 +15,23 @@ const errandSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
+    // Country / currency the errand is priced and paid in
+    country: {
+      type: String,
+      enum: ["GB", "NG"],
+      default: "GB",
+      index: true,
+    },
+    currency: {
+      type: String,
+      enum: ["GBP", "NGN"],
+      default: "GBP",
+    },
+    distanceUnit: {
+      type: String,
+      enum: ["mi", "km"],
+      default: "mi",
+    },
     serviceType: {
       type: String,
       // enum: [
@@ -33,9 +50,15 @@ const errandSchema = new mongoose.Schema(
     },
     pickup: {
       address: String,
+      formattedAddress: String,
       street: String,
+      area: String,
       town: String,
+      lga: String,
+      state: String,
       postcode: String,
+      contactName: String,
+      contactPhone: String,
       coordinates: {
         lat: Number,
         lng: Number,
@@ -44,9 +67,15 @@ const errandSchema = new mongoose.Schema(
     },
     dropoff: {
       address: String,
+      formattedAddress: String,
       street: String,
+      area: String,
       town: String,
+      lga: String,
+      state: String,
       postcode: String,
+      contactName: String,
+      contactPhone: String,
       coordinates: {
         lat: Number,
         lng: Number,
@@ -107,6 +136,9 @@ const errandSchema = new mongoose.Schema(
     enRouteAt: Date,
     collectedAt: Date,
     deliveredAt: Date,
+    completedAt: Date,
+    completedBy: String, // customer | admin | system (auto-complete)
+    paidAt: Date,
     cancelledAt: Date,
     cancellationReason: String,
     cancelledBy: String,
@@ -114,21 +146,23 @@ const errandSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Distance in the country's display unit (miles for GB, km for NG)
     distance: {
       type: Number,
       default: 0,
     },
+    distanceKm: {
+      type: Number,
+      default: 0,
+    },
+    distanceSource: String, // google | osrm | estimate
     distanceText: {
       type: String,
       default: "",
     },
     baseFee: {
       type: Number,
-      default: 3.5, // £3.50 base fee
-    },
-    distanceFeePerMile: {
-      type: Number,
-      default: 1.6, // £1.60 per mile
+      default: 0,
     },
     subtotal: {
       type: Number,
@@ -136,7 +170,7 @@ const errandSchema = new mongoose.Schema(
     },
     discountPercentage: {
       type: Number,
-      default: 0, // 20% for subscribed users
+      default: 0,
     },
     discountAmount: {
       type: Number,
@@ -152,7 +186,7 @@ const errandSchema = new mongoose.Schema(
     },
     distanceRate: {
       type: Number,
-      default: 0.8, // Rate per mile
+      default: 0, // effective rate per mile (GB) / per km (NG)
     },
     distanceFee: {
       type: Number,
@@ -196,7 +230,7 @@ const errandSchema = new mongoose.Schema(
     },
     paymentStatus: {
       type: String,
-      enum: ["pending", "paid", "released", "refunded"],
+      enum: ["pending", "paid", "released", "refunded", "refund_pending"],
       default: "pending",
     },
     paymentIntentId: String,
@@ -207,11 +241,11 @@ const errandSchema = new mongoose.Schema(
     // Revenue split
     platformFee: {
       type: Number,
-      default: 0, // 20% of total
+      default: 0,
     },
     providerAmount: {
       type: Number,
-      default: 0, // 80% of total
+      default: 0,
     },
 
     // Wait time tracking
@@ -393,76 +427,10 @@ const errandSchema = new mongoose.Schema(
   }
 );
 
-// Pre-save middleware to calculate pricing
-errandSchema.pre("save", function (next) {
-  // Calculate distance fee based on tiered pricing
-  const distance = this.distance || 0;
-  let ratePerMile = 0.8;
-
-  if (distance <= 3) {
-    ratePerMile = 0.8;
-  } else if (distance <= 10) {
-    ratePerMile = 0.7;
-  } else if (distance <= 20) {
-    ratePerMile = 0.6;
-  } else {
-    ratePerMile = 0.5;
-  }
-
-  this.distanceRate = ratePerMile;
-  this.distanceFee = Math.round(distance * ratePerMile * 100) / 100;
-
-  // Calculate subtotal
-  let subtotal = this.baseFee + this.distanceFee;
-
-  // Add heavy item fee
-  if (this.isHeavyItem) {
-    this.heavyItemFee = 2.99;
-    subtotal += this.heavyItemFee;
-  }
-
-  // Add wait time fee (first 5 minutes free)
-  if (this.waitTimeMinutes > 5) {
-    const extraMinutes = this.waitTimeMinutes - 5;
-    this.waitTimeFee = Math.round(extraMinutes * 0.3 * 100) / 100;
-    subtotal += this.waitTimeFee;
-  }
-
-  // Add peak/urgent fee
-  if (this.isPeakUrgent) {
-    this.peakUrgentFee = 1.99;
-    subtotal += this.peakUrgentFee;
-  }
-
-  // Add extra stops fee
-  if (this.extraStopsCount > 0) {
-    this.extraStopsFee = Math.round(this.extraStopsCount * 1.5 * 100) / 100;
-    subtotal += this.extraStopsFee;
-  }
-
-  this.subtotal = Math.round(subtotal * 100) / 100;
-
-  // Apply subscription discount if applicable
-  let discountPercentage = 0;
-  let discountAmount = 0;
-  let total = this.subtotal;
-
-  if (this.isSubscribed) {
-    discountPercentage = 20;
-    discountAmount = Math.round(this.subtotal * 0.2 * 100) / 100;
-    total = Math.round((this.subtotal - discountAmount) * 100) / 100;
-  }
-
-  this.discountPercentage = discountPercentage;
-  this.discountAmount = discountAmount;
-  this.total = Math.round(total * 100) / 100;
-
-  // Calculate revenue split
-  this.platformFee = Math.round(this.total * 0.2 * 100) / 100; // 20%
-  this.providerAmount = Math.round(this.total * 0.8 * 100) / 100; // 80%
-
-  next();
-});
+// NOTE: Pricing is calculated in services/pricingService.js and set by the
+// controller. The old pre-save pricing hooks were removed because they
+// re-ran on every save (e.g. status updates) and silently overwrote the
+// price the customer had already paid.
 
 // Generate errand ID before saving
 errandSchema.pre("save", function (next) {
@@ -471,55 +439,15 @@ errandSchema.pre("save", function (next) {
     const year = date.getFullYear().toString().slice(-2);
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const day = String(date.getDate()).padStart(2, "0");
-    const random = Math.floor(Math.random() * 10000)
-      .toString()
-      .padStart(4, "0");
+    // 6 random alphanumerics: ~2 billion combinations per day (the old
+    // 4-digit suffix collided after a few dozen errands a day).
+    const random = require("crypto").randomBytes(4).toString("hex").slice(0, 6).toUpperCase();
     this.errandId = `E-${year}${month}${day}-${random}`;
   }
   next();
 });
 
-errandSchema.pre("save", function (next) {
-  // Only calculate if no provider assigned yet (base pricing)
-  if (!this.providerId) {
-    const distance = this.distance || 0;
-    let ratePerMile = 0.8;
-
-    if (distance <= 3) ratePerMile = 0.8;
-    else if (distance <= 10) ratePerMile = 0.7;
-    else if (distance <= 20) ratePerMile = 0.6;
-    else ratePerMile = 0.5;
-
-    this.distanceRate = ratePerMile;
-    this.distanceFee = Math.round(distance * ratePerMile * 100) / 100;
-
-    let subtotal = this.baseFee + this.distanceFee;
-    if (this.isHeavyItem) subtotal += 2.99;
-    if (this.waitTimeMinutes > 5) subtotal += (this.waitTimeMinutes - 5) * 0.3;
-    if (this.isPeakUrgent) subtotal += 1.99;
-    if (this.extraStopsCount > 0) subtotal += this.extraStopsCount * 1.5;
-
-    this.subtotal = Math.round(subtotal * 100) / 100;
-
-    // Apply subscription discount
-    if (this.isSubscribed) {
-      this.discountPercentage = 20;
-      this.discountAmount = Math.round(this.subtotal * 0.2 * 100) / 100;
-      this.total =
-        Math.round((this.subtotal - this.discountAmount) * 100) / 100;
-    } else {
-      this.discountPercentage = 0;
-      this.discountAmount = 0;
-      this.total = this.subtotal;
-    }
-
-    // Platform fee and provider amount are calculated when offer is accepted
-    // Leave them as 0 until provider is assigned
-    this.platformFee = 0;
-    this.providerAmount = 0;
-  }
-
-  next();
-});
+errandSchema.index({ status: 1, paymentStatus: 1, country: 1, providerId: 1 });
+errandSchema.index({ customerId: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Errand", errandSchema);
