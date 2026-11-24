@@ -11,6 +11,7 @@
 const Payment = require('../models/Payment.model');
 const Booking = require('../models/Booking.model');
 const Errand = require('../models/Errand.model');
+const ServiceRequest = require('../models/ServiceRequest.model');
 const User = require('../models/User.model');
 const Wallet = require('../models/Wallet.model');
 const Transaction = require('../models/Transaction.model');
@@ -18,7 +19,13 @@ const Connection = require('../models/Connection.model');
 const createNotification = require('../utils/create-notification');
 const gateways = require('../services/payments');
 const pricingService = require('../services/pricingService');
-const { markPaymentSucceeded, releaseErrandFunds, refundErrandPayment } = require('../services/escrowService');
+const {
+  markPaymentSucceeded,
+  releaseErrandFunds,
+  refundErrandPayment,
+  releaseServiceFunds,
+  refundServicePayment,
+} = require('../services/escrowService');
 const { notifyNearbyRunners } = require('../services/runnerMatching');
 const { countryOfUser, getCountry, normalizeCountry } = require('../config/countries');
 const { formatMoney, round2 } = require('../utils/money');
@@ -114,6 +121,113 @@ exports.createErrandCheckout = async (req, res) => {
   }
 };
 
+// ------------------------------------------------------------
+// Service (provider) booking checkout
+// ------------------------------------------------------------
+
+/** POST /payments/service-request/checkout  { serviceRequestId } */
+exports.createServiceCheckout = async (req, res) => {
+  try {
+    const { serviceRequestId } = req.body;
+    const sr = await ServiceRequest.findById(serviceRequestId);
+    if (!sr) return res.status(404).json({ message: 'Service request not found' });
+    if (!same(sr.customerId, req.user._id)) return res.status(403).json({ message: 'Access denied' });
+    if (['cancelled', 'expired'].includes(sr.status)) return res.status(400).json({ message: `This request is ${sr.status}` });
+    if (!sr.selectedProviderId || !(sr.finalPrice > 0)) {
+      return res.status(400).json({ message: 'Accept a provider quote before paying' });
+    }
+    if (sr.paymentStatus !== 'pending') {
+      return res.status(400).json({
+        message: ['paid', 'released'].includes(sr.paymentStatus) ? 'This booking is already paid' : 'This booking does not need payment',
+      });
+    }
+
+    const country = normalizeCountry(sr.country || countryOfUser(req.user));
+    const c = getCountry(country);
+    const gateway = gateways.gatewayForCountry(country);
+
+    await Payment.updateMany({ serviceRequestId: sr._id, status: 'pending', type: 'service' }, { $set: { status: 'cancelled' } });
+
+    // Split may be missing on requests accepted before this release.
+    let { platformFee, providerAmount } = sr;
+    if (!(providerAmount >= 0) || platformFee === undefined) {
+      const split = await pricingService.splitServiceAmount(sr.finalPrice, country);
+      platformFee = split.platformFee;
+      providerAmount = split.providerAmount;
+      await ServiceRequest.updateOne({ _id: sr._id }, { $set: { platformFee, providerAmount, platformFeePercentage: split.platformFeePercentage } });
+    }
+
+    const reference = gateway.name === 'paystack' ? gateways.paystack.makeReference('SRV') : undefined;
+    const payment = await Payment.create({
+      type: 'service',
+      serviceRequestId: sr._id,
+      customerId: req.user._id,
+      providerId: sr.selectedProviderId,
+      amount: sr.finalPrice,
+      platformFee,
+      providerAmount,
+      currency: c.currency,
+      country,
+      gateway: gateway.name,
+      reference,
+      status: 'pending',
+      isEscrow: true,
+      metadata: { requestCode: sr.requestId, serviceType: sr.serviceType },
+    });
+
+    const returnPath = `/customer/service-request/${sr._id}`;
+    const checkout = await gateways.startCheckout({
+      country,
+      amount: sr.finalPrice,
+      currency: c.currency,
+      email: req.user.email,
+      reference: reference || String(payment._id),
+      returnPath,
+      cancelPath: `${returnPath}?payment=cancelled`,
+      metadata: {
+        type: 'service',
+        paymentId: String(payment._id),
+        serviceRequestId: String(sr._id),
+        userId: String(req.user._id),
+      },
+      productName: `GEOBUY ${sr.serviceType}`.slice(0, 120),
+      description: `Service booking #${sr.requestId || ''}`.trim(),
+    });
+
+    payment.reference = checkout.reference;
+    if (gateway.name === 'stripe') payment.stripeSessionId = checkout.reference;
+    await payment.save();
+
+    res.json({
+      url: checkout.url,
+      reference: checkout.reference,
+      gateway: gateway.name,
+      paymentId: payment._id,
+      amount: payment.amount,
+      currency: payment.currency,
+    });
+  } catch (error) {
+    console.error('Create service checkout error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+/** GET /payments/service-request/:serviceRequestId — latest payment for a booking */
+exports.getPaymentByServiceRequest = async (req, res) => {
+  try {
+    const payment = await Payment.findOne({ serviceRequestId: req.params.serviceRequestId, type: 'service', status: { $ne: 'cancelled' } }).sort({
+      createdAt: -1,
+    });
+    if (!payment) return res.status(404).json({ message: 'Payment not found' });
+    if (!same(payment.customerId, req.user._id) && !same(payment.providerId, req.user._id) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+    res.json(payment);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
 // Old endpoint name used by the frontend — now returns a hosted checkout URL.
 exports.createPaymentIntent = async (req, res) => {
   if (req.body.errandId) return exports.createErrandCheckout(req, res);
@@ -148,6 +262,11 @@ async function applyVerifiedPayment(payment, verified, io) {
         paymentId: result.payment._id,
       });
     }
+  }
+  if (!result.alreadyProcessed && result.payment.type === 'service' && result.payment.serviceRequestId && io) {
+    const payload = { serviceRequestId: result.payment.serviceRequestId, paymentId: result.payment._id };
+    io.to(`user_${result.payment.customerId}`).emit('payment-succeeded', payload);
+    if (result.payment.providerId) io.to(`user_${result.payment.providerId}`).emit('service-paid', payload);
   }
   return { ...result, paid: true };
 }
@@ -196,8 +315,13 @@ exports.verifyPayment = async (req, res) => {
 /** Customer or admin releases escrow for a completed/delivered errand. */
 exports.releaseFundsToProvider = async (req, res) => {
   try {
-    const { paymentId, errandId } = req.body;
-    const payment = paymentId ? await Payment.findById(paymentId) : await Payment.findOne({ errandId, type: 'errand' }).sort({ createdAt: -1 });
+    const { paymentId, errandId, serviceRequestId } = req.body;
+    const payment = paymentId
+      ? await Payment.findById(paymentId)
+      : serviceRequestId
+      ? await Payment.findOne({ serviceRequestId, type: 'service', status: { $ne: 'cancelled' } }).sort({ createdAt: -1 })
+      : await Payment.findOne({ errandId, type: 'errand' }).sort({ createdAt: -1 });
+    if (payment?.serviceRequestId) return releaseServiceBooking(req, res, payment);
     if (!payment || !payment.errandId) return res.status(404).json({ message: 'Payment not found' });
 
     if (!same(payment.customerId, req.user._id) && req.user.role !== 'admin') {
@@ -230,6 +354,27 @@ exports.releaseFundsToProvider = async (req, res) => {
   }
 };
 exports.releaseFunds = exports.releaseFundsToProvider;
+
+async function releaseServiceBooking(req, res, payment) {
+  if (!same(payment.customerId, req.user._id) && req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Access denied' });
+  }
+  const sr = await ServiceRequest.findById(payment.serviceRequestId);
+  if (!sr) return res.status(404).json({ message: 'Service request not found' });
+  if (!['in_progress', 'awaiting_confirmation', 'completed'].includes(sr.status) && req.user.role !== 'admin') {
+    return res.status(400).json({ message: 'Funds can only be released once the provider has started the job' });
+  }
+  if (sr.status !== 'completed') {
+    await ServiceRequest.updateOne(
+      { _id: sr._id, status: sr.status },
+      { $set: { status: 'completed', completedAt: new Date(), completedBy: req.user.role === 'admin' ? 'admin' : 'customer' } }
+    );
+  }
+  const result = await releaseServiceFunds(sr, { io: req.app.get('io'), releasedBy: req.user.role });
+  if (!result.released && result.reason === 'already_released') return res.status(400).json({ message: 'Funds already released' });
+  if (!result.released) return res.status(400).json({ message: 'No paid payment found for this booking' });
+  return res.json({ message: 'Funds released successfully', payment: result.payment, providerAmount: result.amount });
+}
 
 /** Kept for compatibility — hosted checkout captures immediately, so this just verifies. */
 exports.confirmPayment = async (req, res) => {
@@ -278,7 +423,31 @@ exports.refundPayment = async (req, res) => {
       return res.json({ message: 'Payment refunded successfully', result });
     }
 
-    // Non-errand payments
+    if (payment.serviceRequestId && payment.type === 'service') {
+      const sr = await ServiceRequest.findById(payment.serviceRequestId);
+      if (payment.disbursementStatus === 'completed' && payment.providerId) {
+        const claw = await Wallet.findOneAndUpdate(
+          { userId: payment.providerId, balance: { $gte: payment.providerAmount } },
+          { $inc: { balance: -payment.providerAmount, totalEarned: -payment.providerAmount } },
+          { new: true }
+        );
+        if (!claw) {
+          return res.status(400).json({ message: "Provider has already withdrawn these funds — refund manually and adjust the provider's wallet." });
+        }
+        await Payment.updateOne({ _id: payment._id }, { $set: { disbursementStatus: 'pending' } });
+      }
+      if (payment.status === 'refund_pending') {
+        await Payment.updateOne({ _id: payment._id }, { $set: { status: 'succeeded' } });
+      }
+      const result = await refundServicePayment(sr || { _id: payment.serviceRequestId, serviceType: 'service' }, {
+        reason: reason || 'Refunded by admin',
+        amount,
+      });
+      if (!result.refunded) return res.status(500).json({ message: result.error || 'Refund failed', result });
+      return res.json({ message: 'Payment refunded successfully', result });
+    }
+
+    // Other payments
     const gateway = gateways.gatewayByName(payment.gateway) || gateways.gatewayForCurrency(payment.currency);
     if (gateway.name === 'paystack') await gateway.refund(payment.reference, amount || payment.amount, payment.currency);
     else await gateway.refund(payment.stripePaymentIntentId || payment.paymentIntentId, amount || payment.amount, payment.currency);
@@ -376,6 +545,7 @@ exports.getMyPayments = async (req, res) => {
     const payments = await Payment.find(query)
       .populate('bookingId', 'bookingId date status')
       .populate('errandId', 'errandId status pickup.town dropoff.town')
+      .populate('serviceRequestId', 'requestId serviceType status')
       .sort({ createdAt: -1 });
     res.json(payments);
   } catch (error) {
@@ -396,6 +566,7 @@ exports.getAllPayments = async (req, res) => {
     const payments = await Payment.find(query)
       .populate('customerId', 'fullName email')
       .populate('providerId', 'fullName email')
+      .populate('serviceRequestId', 'requestId serviceType status')
       .sort({ createdAt: -1 });
     res.json(payments);
   } catch (error) {

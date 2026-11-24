@@ -73,6 +73,14 @@ const settingsSchema = new mongoose.Schema(
       // progressive: each distance band charged at its own rate (no price drop
       // at band edges). flat: legacy — whole distance at one band's rate.
       distanceTierMode: { type: String, enum: ['progressive', 'flat'], default: 'progressive' },
+      // How errand distance is measured:
+      //   road      — road routing (Google / OSRM), haversine only as a fallback
+      //   haversine — straight-line distance (Haversine formula) x distanceMultiplier
+      distanceMethod: { type: String, enum: ['road', 'haversine'], default: 'road' },
+      // Only used with the haversine method. 1 = pure straight line.
+      distanceMultiplier: { type: Number, default: 1, min: 1, max: 3 },
+      // Geobuy's share of service (provider) bookings paid through the app.
+      providerCommissionPercentage: { type: Number, default: 10, min: 0, max: 100 },
     },
 
     // ---------------- Nigeria pricing (NGN, distances in km) ----------------
@@ -106,6 +114,9 @@ const settingsSchema = new mongoose.Schema(
       minimumFare: { type: Number, default: 0, min: 0 },
       minWithdrawal: { type: Number, default: 1000, min: 0 },
       distanceTierMode: { type: String, enum: ['progressive', 'flat'], default: 'progressive' },
+      distanceMethod: { type: String, enum: ['road', 'haversine'], default: 'haversine' },
+      distanceMultiplier: { type: Number, default: 1, min: 1, max: 3 },
+      providerCommissionPercentage: { type: Number, default: 10, min: 0, max: 100 },
     },
 
     // Platform Settings

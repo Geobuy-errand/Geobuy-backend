@@ -50,5 +50,6 @@ router.use('/settings', settingsRoutes);
 router.use('/connections', connectionRoutes);
 router.use('/connect-posts', connectPostRoutes);
 router.use('/seed', seedRoutes);
+router.use('/geo', require('./geo.route'));
 
 module.exports = router;

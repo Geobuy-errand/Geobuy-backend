@@ -10,11 +10,20 @@
 //   4. Runner withdraws from wallet (Paystack transfer in Nigeria,
 //      admin-processed bank transfer in the UK).
 //
+// Provider (service) bookings follow the same escrow pattern:
+//   1. Customer accepts a provider's quote -> pays the agreed price upfront.
+//   2. Provider starts, then marks the job done.
+//   3. Customer confirms (or admin, or auto-complete after N hours)
+//      -> releaseServiceFunds() credits the provider's wallet
+//         (price minus Geobuy's provider commission).
+//   4. Provider withdraws exactly like a runner.
+//
 // Every function here is idempotent: calling it twice never pays twice.
 // ============================================================
 
 const Payment = require('../models/Payment.model');
 const Errand = require('../models/Errand.model');
+const ServiceRequest = require('../models/ServiceRequest.model');
 const Wallet = require('../models/Wallet.model');
 const Transaction = require('../models/Transaction.model');
 const User = require('../models/User.model');
@@ -108,7 +117,93 @@ async function markPaymentSucceeded(payment, { amount, currency, gatewayReferenc
     );
   }
 
+  if (updated.type === 'service' && updated.serviceRequestId) {
+    const sr = await ServiceRequest.findOneAndUpdate(
+      { _id: updated.serviceRequestId, paymentStatus: 'pending' },
+      { $set: { paymentStatus: 'paid', paymentId: updated._id, paidAt: new Date() } },
+      { new: true }
+    );
+    if (!sr) {
+      updated.status = 'refund_pending';
+      updated.refundReason = 'Duplicate payment for a service booking that was already paid';
+      updated.disbursementStatus = 'not_applicable';
+      await updated.save();
+      await notifyAdmins('refund_required', 'Duplicate payment', 'A customer paid twice for the same service booking. Please refund one payment.', {
+        serviceRequestId: updated.serviceRequestId,
+        paymentId: updated._id,
+      });
+      return { payment: updated, alreadyProcessed: false, duplicate: true };
+    }
+
+    await Transaction.create({
+      userId: updated.customerId,
+      type: 'payment',
+      amount: -updated.amount,
+      currency: updated.currency,
+      status: 'completed',
+      description: `Payment for ${sr.serviceType} #${sr.requestId || ''}`.trim(),
+      reference: updated.reference,
+      completedAt: new Date(),
+      metadata: { paymentId: updated._id, serviceRequestId: sr._id },
+    });
+
+    const formatted = formatMoney(updated.amount, updated.currency);
+    await createNotification(
+      updated.customerId,
+      'payment_received',
+      'Payment received',
+      `Your payment of ${formatted} for ${sr.serviceType} is held securely. It's released to your provider only after you confirm the job is done.`,
+      { serviceRequestId: sr._id, paymentId: updated._id }
+    );
+    if (sr.selectedProviderId) {
+      await createNotification(
+        sr.selectedProviderId,
+        'service_paid',
+        'Customer has paid',
+        `The customer has paid ${formatted} for ${sr.serviceType}. You can start the job. The money is added to your wallet when the customer confirms it's done.`,
+        { serviceRequestId: sr._id, paymentId: updated._id }
+      );
+    }
+  }
+
   return { payment: updated, alreadyProcessed: false };
+}
+
+async function notifyAdmins(type, title, message, data) {
+  const admins = await User.find({ role: 'admin', isActive: true }).select('_id').lean();
+  for (const a of admins) await createNotification(a._id, type, title, message, data);
+}
+
+/** Add money to a worker's available balance and record it. */
+async function creditWallet({ userId, amount, currency, country, description, reference, metadata }) {
+  await getOrCreateWallet(userId, country);
+  await Wallet.updateOne({ userId }, { $inc: { balance: amount, totalEarned: amount } });
+  await Transaction.create({
+    userId,
+    type: 'payout',
+    amount,
+    currency,
+    status: 'completed',
+    description,
+    reference,
+    completedAt: new Date(),
+    metadata,
+  });
+}
+
+/** Refund a payment through the gateway it was made with. */
+async function refundViaGateway(payment, refundAmount) {
+  const gateway = gateways.gatewayByName(payment.gateway) || gateways.gatewayForCurrency(payment.currency);
+  if (gateway.name === 'paystack') {
+    return gateway.refund(payment.reference, refundAmount, payment.currency);
+  }
+  let intentId = payment.stripePaymentIntentId || payment.paymentIntentId;
+  if (!intentId && payment.reference) {
+    const v = await gateway.verify(payment.reference);
+    intentId = v.paymentIntentId;
+  }
+  if (!intentId) throw new Error('No Stripe payment intent on record');
+  return gateway.refund(intentId, refundAmount, payment.currency);
 }
 
 /**
@@ -267,4 +362,134 @@ async function refundErrandPayment(errand, { reason = 'Errand cancelled', amount
   }
 }
 
-module.exports = { getOrCreateWallet, markPaymentSucceeded, releaseErrandFunds, refundErrandPayment };
+// ============================================================
+// Provider (service) bookings
+// ============================================================
+
+/**
+ * Credit the provider's wallet for a completed, paid service booking.
+ * Safe to call repeatedly.
+ */
+async function releaseServiceFunds(srOrId, { io, releasedBy = 'system' } = {}) {
+  const sr = srOrId?._id ? srOrId : await ServiceRequest.findById(srOrId);
+  if (!sr) throw new Error('Service request not found');
+  const providerId = sr.selectedProviderId?._id || sr.selectedProviderId;
+  if (!providerId) throw new Error('No provider selected');
+
+  const payment = await Payment.findOneAndUpdate(
+    {
+      serviceRequestId: sr._id,
+      type: 'service',
+      status: { $in: ['succeeded', 'completed', 'paid'] },
+      disbursementStatus: { $in: ['pending', 'failed'] },
+    },
+    { $set: { disbursementStatus: 'processing' } },
+    { new: true }
+  );
+
+  if (!payment) {
+    const existing = await Payment.findOne({ serviceRequestId: sr._id, type: 'service' }).sort({ createdAt: -1 });
+    if (existing?.disbursementStatus === 'completed') return { released: false, reason: 'already_released', payment: existing };
+    return { released: false, reason: 'no_paid_payment', payment: existing };
+  }
+
+  try {
+    const amount = round2(payment.providerAmount ?? sr.providerAmount ?? 0);
+    const country = normalizeCountry(sr.country || payment.country);
+    const reference = `release-${payment._id}`;
+    await creditWallet({
+      userId: providerId,
+      amount,
+      currency: payment.currency,
+      country,
+      description: `Earnings for ${sr.serviceType} #${sr.requestId || ''}`.trim(),
+      reference,
+      metadata: { serviceRequestId: sr._id, paymentId: payment._id, releasedBy },
+    });
+
+    payment.providerId = providerId;
+    payment.disbursementStatus = 'completed';
+    payment.disbursementDate = new Date();
+    payment.disbursementReference = reference;
+    payment.releasedAt = new Date();
+    await payment.save();
+
+    await ServiceRequest.updateOne({ _id: sr._id }, { $set: { paymentStatus: 'released', releasedAt: new Date() } });
+
+    const formatted = formatMoney(amount, payment.currency);
+    await createNotification(providerId, 'payment_released', 'Funds released', `${formatted} has been added to your wallet for ${sr.serviceType}.`, {
+      serviceRequestId: sr._id,
+      amount,
+      paymentId: payment._id,
+    });
+    if (io) {
+      io.to(`user_${providerId}`).emit('funds-released', { serviceRequestId: sr._id, amount, currency: payment.currency });
+      io.to('admin_room').emit('funds-released', { serviceRequestId: sr._id, providerId, amount, currency: payment.currency });
+    }
+    return { released: true, amount, payment };
+  } catch (err) {
+    await Payment.updateOne({ _id: payment._id }, { $set: { disbursementStatus: 'failed' } });
+    throw err;
+  }
+}
+
+/** Refund a paid service booking that won't go ahead. Flags admin if the gateway refund fails. */
+async function refundServicePayment(sr, { reason = 'Service booking cancelled', amount } = {}) {
+  const payment = await Payment.findOne({
+    serviceRequestId: sr._id,
+    type: 'service',
+    status: { $in: ['succeeded', 'completed', 'paid'] },
+    disbursementStatus: { $ne: 'completed' },
+  });
+  if (!payment) return { refunded: false, reason: 'no_refundable_payment' };
+
+  const refundAmount = round2(amount || payment.amount);
+  try {
+    await refundViaGateway(payment, refundAmount);
+    payment.status = 'refunded';
+    payment.disbursementStatus = 'not_applicable';
+    payment.refundedAt = new Date();
+    payment.refundAmount = refundAmount;
+    payment.refundReason = reason;
+    await payment.save();
+    await ServiceRequest.updateOne({ _id: sr._id }, { $set: { paymentStatus: 'refunded' } });
+    await Transaction.create({
+      userId: payment.customerId,
+      type: 'refund',
+      amount: refundAmount,
+      currency: payment.currency,
+      status: 'completed',
+      description: `Refund for ${sr.serviceType}`,
+      reference: `refund-${payment._id}`,
+      completedAt: new Date(),
+    });
+    await createNotification(
+      payment.customerId,
+      'payment_refunded',
+      'Refund issued',
+      `${formatMoney(refundAmount, payment.currency)} is being refunded for ${sr.serviceType}. It can take a few working days to reach your account.`,
+      { serviceRequestId: sr._id, paymentId: payment._id }
+    );
+    return { refunded: true, amount: refundAmount };
+  } catch (err) {
+    console.error('Service refund failed, flagged for admin:', err.message);
+    payment.status = 'refund_pending';
+    payment.refundReason = `${reason} (automatic refund failed: ${err.message})`;
+    await payment.save();
+    await ServiceRequest.updateOne({ _id: sr._id }, { $set: { paymentStatus: 'refund_pending' } });
+    await notifyAdmins('refund_required', 'Manual refund needed', `Automatic refund failed for service booking #${sr.requestId || sr._id}.`, {
+      serviceRequestId: sr._id,
+      paymentId: payment._id,
+    });
+    return { refunded: false, reason: 'refund_failed', error: err.message };
+  }
+}
+
+module.exports = {
+  getOrCreateWallet,
+  markPaymentSucceeded,
+  releaseErrandFunds,
+  refundErrandPayment,
+  releaseServiceFunds,
+  refundServicePayment,
+};

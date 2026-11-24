@@ -320,7 +320,7 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
 
   // Errand and connection-fee payments are handled by the same idempotent
   // code path as the browser "verify" call and checkout.session.completed.
-  if (["errand", "connection_fee"].includes(payment.type) || type === "errand" || type === "connection_fee") {
+  if (["errand", "connection_fee", "service"].includes(payment.type) || ["errand", "connection_fee", "service"].includes(type)) {
     await paymentController().applyVerifiedPayment(payment, {
       paid: true,
       amount: fromMinorUnits(paymentIntent.amount_received ?? paymentIntent.amount, paymentIntent.currency),

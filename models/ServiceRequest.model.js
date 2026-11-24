@@ -81,6 +81,9 @@ const serviceRequestSchema = new mongoose.Schema(
         'negotiating',
         'provider_selected',
         'in_progress',
+        // Provider says the job is done; waiting for the customer to confirm
+        // (auto-confirmed after Settings.features.autoCompleteHours).
+        'awaiting_confirmation',
         'completed',
         'cancelled',
         'expired',
@@ -98,6 +101,27 @@ const serviceRequestSchema = new mongoose.Schema(
     finalPrice: {
       type: Number,
     },
+
+    // ---------- Payment through Geobuy (escrow) ----------
+    // Unset on requests created before in-app payments existed: those were
+    // paid to the provider directly and Geobuy invoiced a commission instead.
+    paymentStatus: {
+      type: String,
+      enum: ['pending', 'paid', 'released', 'refunded', 'refund_pending'],
+    },
+    paymentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Payment',
+    },
+    paidAt: Date,
+    platformFee: Number, // Geobuy commission on finalPrice
+    providerAmount: Number, // what the provider's wallet receives
+    providerCompletedAt: Date, // provider marked the job as done
+    completedBy: {
+      type: String,
+      enum: ['customer', 'admin', 'system'],
+    },
+    releasedAt: Date,
     negotiationHistory: [
       {
         from: {

@@ -1,17 +1,29 @@
 // ============================================================
 // GeoService — geocoding and road-distance calculation for UK and Nigeria
 //
-// Strategy (best available first):
-//   1. Google Distance Matrix / Geocoding  (if GOOGLE_MAPS_API_KEY is set)
-//      - uses live traffic for durations (very important in Lagos/Abuja)
-//   2. OSRM road routing                   (OSRM_URL, defaults to the public demo server)
-//   3. Straight-line (haversine) x country road factor  (never fails)
+// Two distance methods, chosen per country in Admin → Settings → Pricing:
+//
+//   haversine (Nigeria default)
+//     Straight-line distance between the two coordinates using the Haversine
+//     formula (utils/haversine.js), optionally x an admin "distance multiplier".
+//     Deterministic, instant, no third-party routing service involved.
+//
+//   road (UK default)
+//     1. Google Distance Matrix (if GOOGLE_MAPS_API_KEY is set, live traffic)
+//     2. OSRM road routing (OSRM_URL, defaults to the public demo server)
+//     3. Haversine x country road factor (never fails)
+//
+// Either way the result depends on good coordinates, so addresses are
+// geocoded with progressively broader fallbacks and a `precision` is returned
+// (street / area / town / state) so callers can refuse vague locations.
 //
 // All distances are returned in KILOMETRES and durations in MINUTES.
 // Convert to miles for UK display with config/countries.kmToUnit().
 // ============================================================
 
 const axios = require('axios');
+const { haversineKm } = require('../utils/haversine');
+const gazetteer = require('../config/gazetteer');
 const {
   getCountry,
   normalizeCountry,
@@ -21,6 +33,7 @@ const {
 
 const GOOGLE_KEY = () => process.env.GOOGLE_MAPS_API_KEY;
 const OSRM_URL = () => (process.env.OSRM_URL || 'https://router.project-osrm.org').replace(/\/$/, '');
+const PHOTON_URL = () => (process.env.PHOTON_URL || 'https://photon.komoot.io').replace(/\/$/, '');
 const NOMINATIM_URL = () => (process.env.NOMINATIM_URL || 'https://nominatim.openstreetmap.org').replace(/\/$/, '');
 const NOMINATIM_UA = () =>
   process.env.NOMINATIM_USER_AGENT || 'GEOBUY-Errands/2.0 (set NOMINATIM_USER_AGENT with a contact email)';
@@ -92,15 +105,30 @@ function pointFromGeoJSON(location) {
   return toPoint({ lat: coords[1], lng: coords[0] });
 }
 
-function haversineKm(a, b) {
-  const R = 6371.0088;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const s =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+/**
+ * Which distance method a country uses (from admin pricing settings).
+ * Lazy require: pricingService loads Settings, and nothing there needs geoService.
+ */
+async function distanceConfig(country, override = {}) {
+  if (override.method) {
+    return { method: override.method, multiplier: Number(override.multiplier) || 1 };
+  }
+  try {
+    const pricing = await require('./pricingService').getPricing(country);
+    return { method: pricing.distanceMethod, multiplier: pricing.distanceMultiplier };
+  } catch (e) {
+    return { method: normalizeCountry(country) === 'NG' ? 'haversine' : 'road', multiplier: 1 };
+  }
+}
+
+/** Straight-line route using the Haversine formula. */
+function haversineRoute(a, b, country, multiplier = 1) {
+  const c = getCountry(country);
+  const straight = haversineKm(a, b);
+  const km = straight * (multiplier || 1);
+  // ETA: straight-line distance at the country's typical urban speed.
+  const minutes = Math.max(1, (km / c.fallbackSpeedKmh) * 60);
+  return { distanceKm: km, durationMin: minutes, straightLineKm: straight, source: 'haversine', multiplier };
 }
 
 function round(v, dp = 2) {
@@ -130,8 +158,10 @@ function finalize(result, country) {
     distanceText: formatDistance(distanceKm, code),
     durationText: formatDuration(durationMin),
     source: result.source,
-    accuracy: result.source === 'estimate' ? 'approximate' : 'road',
+    method: result.source === 'haversine' ? 'haversine' : 'road',
+    accuracy: result.source === 'haversine' ? 'straight_line' : result.source === 'estimate' ? 'approximate' : 'road',
     straightLineKm: round(result.straightLineKm, 3),
+    ...(result.source === 'haversine' ? { multiplier: result.multiplier || 1 } : {}),
   };
 }
 
@@ -185,17 +215,24 @@ async function osrmRoute(a, b, mode) {
 // ------------------------------------------------------------
 
 /**
- * Road distance between two points.
+ * Distance between two points, using the country's configured method.
  * @param {{lat,lng}} from
  * @param {{lat,lng}} to
- * @param {{country?: 'GB'|'NG', mode?: 'driving'|'cycling'|'walking'}} opts
+ * @param {{country?: 'GB'|'NG', mode?: 'driving'|'cycling'|'walking', method?: 'road'|'haversine', multiplier?: number}} opts
  */
-async function getRoute(from, to, { country = 'GB', mode = 'driving' } = {}) {
+async function getRoute(from, to, { country = 'GB', mode = 'driving', method, multiplier } = {}) {
   const a = toPoint(from);
   const b = toPoint(to);
   if (!a || !b) throw new Error('Valid pickup and drop-off coordinates are required');
 
   const code = normalizeCountry(country);
+  const cfg = await distanceConfig(code, { method, multiplier });
+
+  if (cfg.method === 'haversine') {
+    // Pure maths — no cache or network needed, and always the same answer.
+    return finalize(haversineRoute(a, b, code, cfg.multiplier), code);
+  }
+
   const key = cacheKey(a, b, mode);
   const cached = routeCache.get(key);
   if (cached) return cached;
@@ -247,7 +284,7 @@ async function getRoute(from, to, { country = 'GB', mode = 'driving' } = {}) {
  * Returns an array aligned with `destinations`; entries are null when a
  * destination has no usable coordinates.
  */
-async function getDistancesFrom(origin, destinations, { country = 'GB', mode = 'driving' } = {}) {
+async function getDistancesFrom(origin, destinations, { country = 'GB', mode = 'driving', method, multiplier } = {}) {
   const a = toPoint(origin);
   const code = normalizeCountry(country);
   const points = destinations.map(toPoint);
@@ -256,6 +293,12 @@ async function getDistancesFrom(origin, destinations, { country = 'GB', mode = '
   const valid = points.map((p, i) => ({ p, i })).filter((x) => x.p);
   const out = points.map(() => null);
   if (valid.length === 0) return out;
+
+  const cfg = await distanceConfig(code, { method, multiplier });
+  if (cfg.method === 'haversine') {
+    for (const { p, i } of valid) out[i] = finalize(haversineRoute(a, p, code, cfg.multiplier), code);
+    return out;
+  }
 
   // Straight-line estimate first; refined below where possible.
   for (const { p, i } of valid) {
@@ -361,6 +404,35 @@ async function geocode(address, { country = 'GB' } = {}) {
     }
   }
 
+  // Photon: OpenStreetMap search that copes with partial / informal
+  // addresses much better than Nominatim (PHOTON_URL to self-host).
+  if (!result) {
+    try {
+      const b = c.bounds;
+      const { data } = await axios.get(`${PHOTON_URL()}/api/`, {
+        params: { q: address, limit: 3, lang: 'en', bbox: `${b.minLng},${b.minLat},${b.maxLng},${b.maxLat}` },
+        headers: { 'User-Agent': NOMINATIM_UA() },
+        timeout: HTTP_TIMEOUT_MS,
+      });
+      const f = (data?.features || []).find((x) => {
+        const [lng, lat] = x.geometry?.coordinates || [];
+        const cc = (x.properties?.countrycode || '').toUpperCase();
+        return (!cc || cc === code) && isWithinCountry(lat, lng, code);
+      });
+      if (f) {
+        result = {
+          lat: f.geometry.coordinates[1],
+          lng: f.geometry.coordinates[0],
+          displayName: [f.properties.name, f.properties.city, f.properties.state].filter(Boolean).join(', '),
+          address: f.properties,
+          source: 'photon',
+        };
+      }
+    } catch (e) {
+      console.warn('[geo] Photon geocode failed:', e.message);
+    }
+  }
+
   if (!result) {
     try {
       const { data } = await throttleNominatim(() =>
@@ -418,15 +490,68 @@ function addressToString(addr = {}, country) {
 }
 
 /**
+ * Geocoding attempts from most to least precise. Nigerian addresses often
+ * don't geocode with the full street line, so we fall back to the area/LGA,
+ * then the town, then the state — and report which level matched.
+ */
+function geocodeAttempts(addr = {}, country) {
+  if (typeof addr === 'string') return [{ text: addr, precision: 'street' }];
+  const name = getCountry(country).name;
+  const clean = (parts) => [...new Set(parts.filter((p) => p && String(p).trim()).map((p) => String(p).trim()))];
+  const town = addr.town || addr.city;
+  const attempts = [
+    { parts: [addr.address], precision: 'street' },
+    { parts: [addr.street, addr.area, addr.lga, town, addr.state, addr.postcode], precision: 'street' },
+    { parts: [addr.street, town, addr.state], precision: 'street' },
+    { parts: [addr.area || addr.lga, town, addr.state], precision: 'area' },
+    { parts: [addr.lga, addr.state], precision: 'area' },
+    { parts: [town, addr.state], precision: 'town' },
+    { parts: [addr.postcode], precision: 'area' },
+    { parts: [addr.state], precision: 'state' },
+  ];
+  const seen = new Set();
+  const out = [];
+  for (const a of attempts) {
+    const parts = clean(a.parts);
+    // A street-level attempt needs more than just a town/state
+    if (!parts.length) continue;
+    const text = [...parts, name].join(', ');
+    if (seen.has(text)) continue;
+    seen.add(text);
+    out.push({ text, precision: a.precision });
+  }
+  return out;
+}
+
+/**
  * Resolve coordinates for an address-like object. Uses supplied coordinates
- * if they are inside the country, otherwise geocodes.
+ * (from the address picker / GPS) if they are inside the country, otherwise
+ * geocodes with progressively broader fallbacks.
+ * Returns { lat, lng, source, precision } or null.
+ *   precision: 'exact' (picked/GPS) | 'street' | 'area' | 'town' | 'state'
  */
 async function resolvePoint(addr, country) {
   const supplied = toPoint(addr?.coordinates || addr);
-  if (supplied && isWithinCountry(supplied.lat, supplied.lng, country)) return { ...supplied, source: 'client' };
-  const text = addressToString(addr, country);
-  const geo = await geocode(text, { country });
-  return geo ? { lat: geo.lat, lng: geo.lng, source: geo.source } : null;
+  if (supplied && isWithinCountry(supplied.lat, supplied.lng, country)) {
+    return { ...supplied, source: 'client', precision: 'exact' };
+  }
+  let stateOnly = null;
+  for (const attempt of geocodeAttempts(addr, country)) {
+    const geo = await geocode(attempt.text, { country });
+    if (!geo) continue;
+    const found = { lat: geo.lat, lng: geo.lng, source: geo.source, precision: attempt.precision };
+    if (attempt.precision !== 'state') return found;
+    stateOnly = found;
+    break;
+  }
+
+  // No map service could place it more precisely than the state: look for a
+  // known neighbourhood or town in the text ("…, Lekki, Lagos" -> Lekki).
+  const text = typeof addr === 'string' ? addr : [addr?.address, addr?.street, addr?.area, addr?.lga, addr?.town, addr?.city, addr?.state].filter(Boolean).join(', ');
+  const local = gazetteer.lookup(text, normalizeCountry(country));
+  if (local) return { lat: local.lat, lng: local.lng, source: 'gazetteer', precision: local.precision, matched: local.name };
+
+  return stateOnly;
 }
 
 module.exports = {
@@ -436,6 +561,9 @@ module.exports = {
   resolvePoint,
   addressToString,
   haversineKm,
+  haversineRoute,
+  distanceConfig,
+  geocodeAttempts,
   toPoint,
   pointFromGeoJSON,
   formatDuration,

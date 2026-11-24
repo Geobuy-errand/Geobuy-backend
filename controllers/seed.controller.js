@@ -1874,3 +1874,5 @@ exports.resetAndReseed = async (req, res) => {
     });
   }
 };
+// Reused by scripts/seed-test-data.js (UK + Nigeria test dataset)
+exports.seeders = { seedSettings, seedServiceCategories, seedServices, seedSubscriptionPlans, seedAdminUser };

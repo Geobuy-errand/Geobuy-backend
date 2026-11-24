@@ -155,7 +155,7 @@ const errandSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
-    distanceSource: String, // google | osrm | estimate
+    distanceSource: String, // haversine | google | osrm | estimate
     distanceText: {
       type: String,
       default: "",

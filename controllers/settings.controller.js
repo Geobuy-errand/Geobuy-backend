@@ -16,6 +16,9 @@ const PUBLIC_PRICING_FIELDS = [
   'minimumFare',
   'minWithdrawal',
   'distanceTierMode',
+  'distanceMethod',
+  'distanceMultiplier',
+  'providerCommissionPercentage',
 ];
 
 function pickPricing(p) {

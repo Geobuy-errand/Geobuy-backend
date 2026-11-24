@@ -13,7 +13,8 @@ const { countryOfUser, getCountry, normalizeCountry, unitToKm, formatDistance } 
 const { formatMoney, round2 } = require('../utils/money');
 
 const same = (a, b) => a && b && String(a?._id || a) === String(b?._id || b);
-const SETTINGS_FALLBACK_COMMISSION_RATE = 10; // % — matches the existing commission default
+const SETTINGS_FALLBACK_COMMISSION_RATE = 10; // % — commission invoice for legacy (paid-directly) bookings
+const { releaseServiceFunds, refundServicePayment } = require('../services/escrowService');
 
 // ============================================================
 // SERVICE CRUD FUNCTIONS
@@ -678,6 +679,10 @@ exports.acceptQuote = async (req, res) => {
     const finalPrice = quote.amount;
     const providerId = quote.providerId._id;
 
+    // The customer now pays through Geobuy (escrow). The provider's share is
+    // credited to their wallet when the customer confirms the job is done.
+    const split = await pricingService.splitServiceAmount(finalPrice, serviceRequest.country || 'GB');
+
     // Atomically claim the request so two quotes can't both be accepted.
     const claimed = await ServiceRequest.findOneAndUpdate(
       { _id: serviceRequest._id, status: { $in: ['pending', 'quotes_received', 'negotiating'] } },
@@ -687,6 +692,10 @@ exports.acceptQuote = async (req, res) => {
           selectedQuoteId: quote._id,
           finalPrice,
           status: 'provider_selected',
+          paymentStatus: 'pending',
+          platformFee: split.platformFee,
+          providerAmount: split.providerAmount,
+          platformFeePercentage: split.platformFeePercentage,
         },
       },
       { new: true }
@@ -709,15 +718,15 @@ exports.acceptQuote = async (req, res) => {
       providerId,
       'quote_accepted',
       '🎉 Quote Accepted!',
-      `Your quote of ${price} has been accepted for ${claimed.serviceType}`,
+      `Your quote of ${price} has been accepted for ${claimed.serviceType}. We'll tell you as soon as the customer has paid — please don't start before then.`,
       { serviceRequestId: claimed._id, customerId: req.user._id, customerName: req.user.fullName, finalPrice }
     );
 
     await createNotification(
       req.user._id,
-      'service_request_accepted',
-      '✅ Provider booked',
-      `You booked ${quote.providerId.fullName || 'the provider'} for ${price}`,
+      'service_payment_required',
+      '✅ Provider booked — payment needed',
+      `You booked ${quote.providerId.fullName || 'the provider'} for ${price}. Pay now to confirm the booking — your money is held securely until you confirm the job is done.`,
       { serviceRequestId: claimed._id, providerId, finalPrice }
     );
 
@@ -865,7 +874,7 @@ exports.getProviderServiceRequests = async (req, res) => {
         { 'invitedProviders.providerId': req.user._id },
       ],
       status: { 
-        $in: ['pending', 'quotes_received', 'negotiating', 'provider_selected', 'in_progress'] 
+        $in: ['pending', 'quotes_received', 'negotiating', 'provider_selected', 'in_progress', 'awaiting_confirmation', 'completed'] 
       },
     })
       .populate('customerId', 'fullName email phoneNumber')
@@ -901,11 +910,23 @@ exports.cancelServiceRequest = async (req, res) => {
     if (['completed', 'cancelled'].includes(serviceRequest.status)) {
       return res.status(400).json({ message: `Request is already ${serviceRequest.status}` });
     }
+    // Once the work has started the customer can't cancel and take the money
+    // back unilaterally — that needs an admin (who can refund from the admin panel).
+    if (['in_progress', 'awaiting_confirmation'].includes(serviceRequest.status) && req.user.role !== 'admin') {
+      return res.status(400).json({ message: 'The provider has already started this job. Please contact support if there is a problem.' });
+    }
 
     serviceRequest.status = 'cancelled';
     serviceRequest.cancelledAt = new Date();
     serviceRequest.cancellationReason = reason || 'Cancelled by user';
     await serviceRequest.save();
+
+    let refund = null;
+    if (serviceRequest.paymentStatus === 'paid') {
+      refund = await refundServicePayment(serviceRequest, { reason: serviceRequest.cancellationReason });
+    } else if (serviceRequest.paymentStatus === 'pending') {
+      await ServiceRequest.updateOne({ _id: serviceRequest._id }, { $unset: { paymentStatus: 1 } });
+    }
 
     // Notify selected provider if any
     if (serviceRequest.selectedProviderId) {
@@ -919,8 +940,9 @@ exports.cancelServiceRequest = async (req, res) => {
     }
 
     res.json({
-      message: 'Service request cancelled',
+      message: refund?.refunded ? 'Service request cancelled and refund issued' : 'Service request cancelled',
       serviceRequest,
+      refund,
     });
   } catch (error) {
     console.error('Cancel service request error:', error);
@@ -940,17 +962,38 @@ exports.completeServiceRequest = async (req, res) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    if (serviceRequest.status !== 'provider_selected' && serviceRequest.status !== 'in_progress') {
+    if (!['provider_selected', 'in_progress', 'awaiting_confirmation'].includes(serviceRequest.status)) {
       return res.status(400).json({ message: 'Request is not in a completable state' });
     }
 
-    serviceRequest.status = 'completed';
-    serviceRequest.completedAt = new Date();
-    await serviceRequest.save();
+    const paidInApp = serviceRequest.paymentStatus !== undefined && serviceRequest.paymentStatus !== null;
+    if (paidInApp && serviceRequest.paymentStatus === 'pending') {
+      return res.status(400).json({ message: 'Please pay for this booking before marking it complete' });
+    }
 
-    // Providers are paid directly by the customer, so Geobuy invoices its
+    const previousStatus = serviceRequest.status;
+    const claimed = await ServiceRequest.findOneAndUpdate(
+      { _id: serviceRequest._id, status: previousStatus },
+      { $set: { status: 'completed', completedAt: new Date(), completedBy: 'customer' } },
+      { new: true }
+    );
+    if (!claimed) return res.status(409).json({ message: 'This request was updated. Please refresh.' });
+    Object.assign(serviceRequest, claimed.toObject());
+
+    // Paid through Geobuy: release the escrow to the provider's wallet.
+    let fundsReleased = false;
+    if (paidInApp && ['paid', 'released'].includes(claimed.paymentStatus)) {
+      try {
+        const r = await releaseServiceFunds(claimed, { io: req.app.get('io'), releasedBy: 'customer' });
+        fundsReleased = r.released;
+      } catch (e) {
+        console.error('Service release failed (admin can retry):', e.message);
+      }
+    }
+
+    // Older bookings paid directly to the provider: Geobuy invoices its
     // commission automatically when the job is completed.
-    if (serviceRequest.selectedProviderId && serviceRequest.finalPrice > 0) {
+    if (!paidInApp && serviceRequest.selectedProviderId && serviceRequest.finalPrice > 0) {
       try {
         const exists = await Commission.findOne({ serviceRequestId: serviceRequest._id });
         if (!exists) {
@@ -978,14 +1021,15 @@ exports.completeServiceRequest = async (req, res) => {
         serviceRequest.selectedProviderId,
         'request_completed',
         'Service Request Completed',
-        `Service request #${serviceRequest.requestId} has been marked as completed`,
+        `Service request #${serviceRequest.requestId} has been marked as completed${fundsReleased ? ' — your earnings are in your wallet' : ''}`,
         { serviceRequestId: serviceRequest._id }
       );
     }
 
     res.json({
-      message: 'Service request completed',
+      message: fundsReleased ? 'Service completed — payment released to the provider' : 'Service request completed',
       serviceRequest,
+      fundsReleased,
     });
   } catch (error) {
     console.error('Complete service request error:', error);
@@ -1009,6 +1053,9 @@ exports.startServiceRequest = async (req, res) => {
     if (serviceRequest.status !== 'provider_selected') {
       return res.status(400).json({ message: 'Request is not ready to start' });
     }
+    if (serviceRequest.paymentStatus === 'pending') {
+      return res.status(400).json({ message: "The customer hasn't paid yet. We'll notify you as soon as they do." });
+    }
 
     serviceRequest.status = 'in_progress';
     await serviceRequest.save();
@@ -1029,6 +1076,42 @@ exports.startServiceRequest = async (req, res) => {
     });
   } catch (error) {
     console.error('Start service request error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Provider marks the job as done (PUT /services/requests/:id/mark-done)
+// The customer then confirms; if they don't, it auto-completes after
+// Settings.features.autoCompleteHours and the provider is paid.
+exports.markServiceDone = async (req, res) => {
+  try {
+    const serviceRequest = await ServiceRequest.findById(req.params.id);
+    if (!serviceRequest) return res.status(404).json({ message: 'Service request not found' });
+    if (!same(serviceRequest.selectedProviderId, req.user._id)) return res.status(403).json({ message: 'Access denied' });
+    if (serviceRequest.status !== 'in_progress') {
+      return res.status(400).json({ message: 'Start the job before marking it as done' });
+    }
+
+    const claimed = await ServiceRequest.findOneAndUpdate(
+      { _id: serviceRequest._id, status: 'in_progress' },
+      { $set: { status: 'awaiting_confirmation', providerCompletedAt: new Date() } },
+      { new: true }
+    );
+    if (!claimed) return res.status(409).json({ message: 'This request was updated. Please refresh.' });
+
+    await createNotification(
+      claimed.customerId,
+      'service_marked_done',
+      'Job marked as done',
+      `${req.user.fullName} has marked ${claimed.serviceType} as done. Please confirm so we can pay them — if there's a problem, contact support.`,
+      { serviceRequestId: claimed._id }
+    );
+    const io = req.app.get('io');
+    if (io) io.to(`user_${claimed.customerId}`).emit('service-marked-done', { serviceRequestId: claimed._id });
+
+    res.json({ message: 'Marked as done. The customer has been asked to confirm.', serviceRequest: claimed });
+  } catch (error) {
+    console.error('Mark service done error:', error);
     res.status(500).json({ message: error.message });
   }
 };

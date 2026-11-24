@@ -83,11 +83,11 @@ async function buildQuote(body, user) {
   if (!pickupPoint || !dropoffPoint) {
     const which = !pickupPoint ? 'pickup' : 'drop-off';
     const e = new Error(
-      `We couldn't find the ${which} address in ${c.name}. Please pick it from the suggestions or add the area and ${
-        country === 'NG' ? 'state' : 'postcode'
-      }.`
+      `We couldn't find the ${which} address in ${c.name}. Choose one of the suggestions, or set the ${which} on the map.`
     );
     e.status = 400;
+    e.code = 'ADDRESS_NOT_FOUND';
+    e.field = !pickupPoint ? 'pickup' : 'dropoff';
     throw e;
   }
 
@@ -99,7 +99,25 @@ async function buildQuote(body, user) {
     }
   }
 
+  // Haversine needs real coordinates. A point we could only place at the
+  // centre of a whole state (e.g. "Lagos") would make the distance meaningless.
+  for (const [label, p] of [['pickup', pickupPoint], ['drop-off', dropoffPoint]]) {
+    if (p.precision === 'state') {
+      const e = new Error(
+        `We could only find the ${label} state, not the exact place. Choose the ${label} address from the suggestions, or set it on the map.`
+      );
+      e.status = 400;
+      e.code = 'ADDRESS_TOO_VAGUE';
+      e.field = label === 'pickup' ? 'pickup' : 'dropoff';
+      throw e;
+    }
+  }
+
   const route = await geoService.getRoute(pickupPoint, dropoffPoint, { country });
+  const precisionRank = { exact: 0, street: 1, area: 2, town: 3, state: 4 };
+  route.precision = [pickupPoint.precision, dropoffPoint.precision].sort(
+    (x, y) => (precisionRank[y] ?? 1) - (precisionRank[x] ?? 1)
+  )[0];
 
   const price = await pricingService.calculateErrandPrice({
     country,
@@ -124,7 +142,11 @@ function priceBreakdownResponse(route, price) {
       km: route.distanceKm,
       text: route.distanceText,
       source: route.source,
+      method: route.method,
       accuracy: route.accuracy,
+      // Least precise of the two points: exact | street | area | town
+      precision: route.precision,
+      straightLineKm: route.straightLineKm,
     },
     duration: { minutes: route.durationMin, text: route.durationText },
     baseFee: price.baseFee,
@@ -158,7 +180,7 @@ exports.quoteErrand = async (req, res) => {
       dropoff: { coordinates: dropoffPoint },
     });
   } catch (error) {
-    res.status(error.status || 500).json({ message: error.message });
+    res.status(error.status || 500).json({ message: error.message, ...(error.code ? { code: error.code, field: error.field } : {}) });
   }
 };
 
@@ -237,7 +259,7 @@ exports.createErrand = async (req, res) => {
     });
   } catch (error) {
     console.error('Create errand error:', error);
-    res.status(error.status || 500).json({ message: error.message || 'Failed to create errand' });
+    res.status(error.status || 500).json({ message: error.message || 'Failed to create errand', ...(error.code ? { code: error.code, field: error.field } : {}) });
   }
 };
 

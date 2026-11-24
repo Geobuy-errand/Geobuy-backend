@@ -5,6 +5,7 @@ const PaymentController = require('../controllers/payment.controller');
 
 // Customer: hosted checkout (Stripe for UK, Paystack for Nigeria)
 router.post('/errand/checkout', authMiddleware, requireRole('customer'), PaymentController.createErrandCheckout);
+router.post('/service-request/checkout', authMiddleware, requireRole('customer'), PaymentController.createServiceCheckout);
 router.get('/verify', authMiddleware, PaymentController.verifyPayment);
 
 // Backwards-compatible names
@@ -24,5 +25,6 @@ router.get('/admin/stats', authMiddleware, requireRole('admin'), PaymentControll
 
 router.get('/booking/:bookingId', authMiddleware, PaymentController.getPaymentByBooking);
 router.get('/errand/:errandId', authMiddleware, PaymentController.getPaymentByErrand);
+router.get('/service-request/:serviceRequestId', authMiddleware, PaymentController.getPaymentByServiceRequest);
 
 module.exports = router;

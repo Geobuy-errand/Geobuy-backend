@@ -24,6 +24,9 @@ const DEFAULT_PRICING = {
     platformFeePercentage: 20,
     minimumFare: 0,
     minWithdrawal: 10,
+    distanceMethod: 'road',
+    distanceMultiplier: 1,
+    providerCommissionPercentage: 10,
     distanceTierMode: 'progressive',
     distanceTiers: [
       { upTo: 3, rate: 0.8 },
@@ -44,6 +47,9 @@ const DEFAULT_PRICING = {
     platformFeePercentage: 20,
     minimumFare: 0,
     minWithdrawal: 1000,
+    distanceMethod: 'haversine',
+    distanceMultiplier: 1,
+    providerCommissionPercentage: 10,
     distanceTierMode: 'progressive',
     distanceTiers: [
       { upTo: 5, rate: 200 },
@@ -96,6 +102,9 @@ async function getPricing(country) {
     platformFeePercentage: num(p.platformFeePercentage, defaults.platformFeePercentage),
     minimumFare: num(p.minimumFare, defaults.minimumFare),
     minWithdrawal: num(p.minWithdrawal, defaults.minWithdrawal),
+    distanceMethod: ['road', 'haversine'].includes(p.distanceMethod) ? p.distanceMethod : defaults.distanceMethod,
+    distanceMultiplier: Math.min(3, Math.max(1, num(p.distanceMultiplier, defaults.distanceMultiplier))),
+    providerCommissionPercentage: num(p.providerCommissionPercentage, defaults.providerCommissionPercentage),
     distanceTierMode: p.distanceTierMode || defaults.distanceTierMode,
     distanceTiers: normaliseTiers(p.distanceTiers, defaults.distanceTiers),
   };
@@ -222,8 +231,18 @@ async function splitAmount(amount, country) {
   return { platformFee, providerAmount: round2(total - platformFee), platformFeePercentage: pricing.platformFeePercentage };
 }
 
+/** Split a provider (service) booking: Geobuy commission vs the provider's share. */
+async function splitServiceAmount(amount, country) {
+  const pricing = await getPricing(country);
+  const total = round2(amount);
+  const rate = pricing.providerCommissionPercentage;
+  const platformFee = round2((total * rate) / 100);
+  return { platformFee, providerAmount: round2(total - platformFee), platformFeePercentage: rate };
+}
+
 module.exports = {
   DEFAULT_PRICING,
+  splitServiceAmount,
   getPricing,
   distanceFeeFor,
   calculateErrandPrice,

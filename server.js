@@ -60,6 +60,8 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: 'Too many requests from this IP, please try again later.',
+  // Address type-ahead has its own per-minute limit (routes/geo.route.js)
+  skip: (req) => req.path.startsWith('/geo/'),
 });
 
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));

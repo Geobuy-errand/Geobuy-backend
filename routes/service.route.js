@@ -38,6 +38,7 @@ router.get('/request/:requestId/quotes', authMiddleware, ServiceController.getQu
 // ---------------- Provider ----------------
 router.get('/provider-requests', authMiddleware, requireRole('provider'), ServiceController.getProviderServiceRequests);
 router.put('/request/:id/start', authMiddleware, requireRole('provider'), ServiceController.startServiceRequest);
+router.put('/request/:id/mark-done', authMiddleware, requireRole('provider'), ServiceController.markServiceDone);
 
 // ---------------- Admin service CRUD ----------------
 router.post('/', authMiddleware, requireRole('admin'), ServiceController.createService);

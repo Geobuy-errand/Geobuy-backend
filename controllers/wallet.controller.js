@@ -10,6 +10,8 @@ const crypto = require('crypto');
 const Wallet = require('../models/Wallet.model');
 const Withdrawal = require('../models/Withdrawal.model');
 const Payment = require('../models/Payment.model');
+const Errand = require('../models/Errand.model');
+const ServiceRequest = require('../models/ServiceRequest.model');
 const Transaction = require('../models/Transaction.model');
 const User = require('../models/User.model');
 const Settings = require('../models/Setting.model');
@@ -31,11 +33,31 @@ exports.getWallet = async (req, res) => {
     const country = countryOfUser(req.user);
     const wallet = await getOrCreateWallet(req.user._id, country);
     const pricing = await pricingService.getPricing(country);
+
+    // Money customers have paid for jobs this worker is doing, still held
+    // in escrow until the customer confirms (shown as "On hold").
+    const [errandsHeld, servicesHeld] = await Promise.all([
+      Errand.aggregate([
+        { $match: { providerId: req.user._id, paymentStatus: 'paid', status: { $nin: ['cancelled', 'completed'] } } },
+        { $group: { _id: null, total: { $sum: '$providerAmount' }, count: { $sum: 1 } } },
+      ]),
+      ServiceRequest.aggregate([
+        { $match: { selectedProviderId: req.user._id, paymentStatus: 'paid', status: { $nin: ['cancelled', 'completed'] } } },
+        { $group: { _id: null, total: { $sum: '$providerAmount' }, count: { $sum: 1 } } },
+      ]),
+    ]);
+    const onHold = round2((errandsHeld[0]?.total || 0) + (servicesHeld[0]?.total || 0));
+
     res.json({
       ...wallet.toObject(),
       currency: wallet.currency || getCountry(country).currency,
       country,
       minWithdrawal: pricing.minWithdrawal,
+      onHold,
+      onHoldJobs: (errandsHeld[0]?.count || 0) + (servicesHeld[0]?.count || 0),
+      // balance = withdrawable now; pendingBalance = withdrawals being paid out
+      withdrawable: round2(wallet.balance),
+      hasBankDetails: Boolean(req.user.bankDetails?.accountNumber),
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -52,6 +74,7 @@ exports.getTransactions = async (req, res) => {
     })
       .populate('bookingId', 'bookingId serviceType date')
       .populate('errandId', 'errandId pickup.town dropoff.town')
+      .populate('serviceRequestId', 'requestId serviceType')
       .sort({ releasedAt: -1 });
 
     const withdrawals = await Withdrawal.find({ userId: req.user._id }).sort({ createdAt: -1 });

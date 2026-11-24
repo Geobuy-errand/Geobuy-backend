@@ -9,6 +9,18 @@ const { requireSeedAccess } = require('../middleware/seedGuard');
 // ============================================================
 
 router.get('/status', requireSeedAccess(), seedController.getSeedStatus);
+
+// UK + Nigeria test dataset (replaces only @geobuy.test accounts and their data)
+router.get('/test-data', requireSeedAccess(), async (req, res) => {
+  try {
+    const { seedTestData } = require('../scripts/seed-test-data');
+    const summary = await seedTestData({ log: () => {} });
+    res.json({ message: 'Test data ready', ...summary });
+  } catch (error) {
+    console.error('Test data seeding failed:', error);
+    res.status(500).json({ message: 'Test data seeding failed', error: error.message });
+  }
+});
 router.get('/run-all', requireSeedAccess(), seedController.runAllSeeders);
 router.get('/run/:seeder', requireSeedAccess(), seedController.runSpecificSeeder);
 
