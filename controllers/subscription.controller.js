@@ -60,6 +60,11 @@ exports.getPlans = async (req, res) => {
 // Create checkout session (updated to use dynamic plans)
 exports.createCheckoutSession = async (req, res) => {
   try {
+    // Admin → Settings → "Subscriptions" switch (existing subscribers are unaffected)
+    const features = await require('../services/settingsService').getFeatures();
+    if (features.subscriptionsEnabled === false) {
+      return res.status(403).json({ message: 'New subscriptions are currently unavailable' });
+    }
     const { planId, successUrl, cancelUrl } = req.body;
     const user = req.user;
 

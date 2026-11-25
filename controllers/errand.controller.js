@@ -1,4 +1,5 @@
 // ============================================================
+const { verificationGate } = require('../services/verificationService');
 // Errand controller — UK & Nigeria
 //
 // Lifecycle:
@@ -166,7 +167,7 @@ function priceBreakdownResponse(route, price) {
     },
     total: price.total,
     formattedTotal: formatMoney(price.total, price.currency),
-    revenueSplit: { geobuyFee: price.platformFee, providerAmount: price.providerAmount },
+    revenueSplit: { geobuyFee: price.platformFee, providerAmount: price.providerAmount, platformFeePercentage: price.platformFeePercentage },
   };
 }
 
@@ -363,6 +364,9 @@ exports.acceptErrand = async (req, res) => {
   try {
     const runner = req.user;
 
+    // Identity check first (Admin → Settings → Verification), then account approval
+    const idGate = await verificationGate(runner, 'errand_runner');
+    if (idGate) return res.status(403).json(idGate);
     if (runner.verificationStatus !== 'approved') {
       return res.status(403).json({ message: 'Your account must be verified before you can accept errands.' });
     }

@@ -4,6 +4,14 @@ const Errand = require('../models/Errand.model');
 const ServiceRequest = require('../models/ServiceRequest.model');
 const User = require('../models/User.model');
 const Quote = require('../models/Quote.model');
+const pricingService = require('../services/pricingService');
+const settingsService = require('../services/settingsService');
+
+/** Commission rate (provider's country) and due date from admin settings. */
+async function commissionDefaults(provider) {
+  const [pricing, ops] = await Promise.all([pricingService.getPricing(provider?.country || 'GB'), settingsService.getOperations()]);
+  return { rate: pricing.providerCommissionPercentage, dueDate: settingsService.daysFromNow(ops.commissionDueDays), currency: pricing.currency };
+}
 
 // Get all commissions for a provider
 exports.getMyCommissions = async (req, res) => {
@@ -76,8 +84,9 @@ exports.generateCommission = async (req, res) => {
       return res.status(400).json({ message: 'User is not a provider' });
     }
 
-    // Calculate commission
-    const rate = commissionRate || 10; // Default 10%
+    // Calculate commission (admin can override the rate per invoice)
+    const defaults = await commissionDefaults(provider);
+    const rate = commissionRate ?? defaults.rate;
     const commissionAmount = Math.round((amount * rate) / 100 * 100) / 100;
 
     const commission = new Commission({
@@ -88,7 +97,8 @@ exports.generateCommission = async (req, res) => {
       amount,
       commissionRate: rate,
       commissionAmount,
-      dueDate: dueDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days default
+      currency: defaults.currency,
+      dueDate: dueDate || defaults.dueDate,
       status: 'pending',
       notes,
     });
@@ -159,8 +169,9 @@ exports.autoGenerateCommission = async (req, res) => {
       return res.status(400).json({ message: 'Commission already generated for this booking' });
     }
 
-    // Generate commission
-    const rate = 10; // 10% platform fee
+    // Generate commission at the provider commission rate set in admin
+    const defaults = await commissionDefaults(await User.findById(providerId).select('country'));
+    const rate = defaults.rate;
     const commissionAmount = Math.round((amount * rate) / 100 * 100) / 100;
 
     const commission = new Commission({
@@ -171,7 +182,8 @@ exports.autoGenerateCommission = async (req, res) => {
       amount,
       commissionRate: rate,
       commissionAmount,
-      dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      currency: defaults.currency,
+      dueDate: defaults.dueDate,
       status: 'pending',
       notes: 'Auto-generated commission',
     });

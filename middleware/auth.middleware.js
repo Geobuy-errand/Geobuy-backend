@@ -1,9 +1,22 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User.model');
 
+/**
+ * The login token, from the "Authorization: Bearer <token>" header (used by
+ * the app — Safari/iOS block cross-site cookies) or the httpOnly cookie.
+ */
+function tokenFromRequest(req) {
+  const header = req.headers?.authorization || '';
+  if (/^Bearer\s+/i.test(header)) {
+    const t = header.replace(/^Bearer\s+/i, '').trim();
+    if (t && t !== 'null' && t !== 'undefined') return t;
+  }
+  return req.cookies?.token;
+}
+
 const authMiddleware = async (req, res, next) => {
   try {
-    const token = req.cookies.token;
+    const token = tokenFromRequest(req);
     
     if (!token) {
       return res.status(401).json({ message: 'Authentication required' });
@@ -49,7 +62,7 @@ const requireRole = (...roles) => {
 // Sets req.user if a valid token cookie is present; never rejects the request.
 const optionalAuth = async (req, res, next) => {
   try {
-    const token = req.cookies?.token;
+    const token = tokenFromRequest(req);
     if (token) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const user = await User.findById(decoded.userId || decoded.id).select('-password');
@@ -61,4 +74,5 @@ const optionalAuth = async (req, res, next) => {
   next();
 };
 
-module.exports = { authMiddleware, requireRole, optionalAuth };
+module.exports = {
+  tokenFromRequest, authMiddleware, requireRole, optionalAuth };

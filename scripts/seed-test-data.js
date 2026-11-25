@@ -420,14 +420,13 @@ async function seedPeople() {
 // Money helpers
 // ------------------------------------------------------------
 async function priceErrand(country, from, to, customerId) {
-  const c = getCountry(country);
-  const { method, multiplier } = await geoService.distanceConfig(country);
+  const cfg = await geoService.distanceConfig(country);
   // UK uses road routing in the app; to keep seeding offline we use the
   // same fallback the app uses when routing is unavailable.
   const route =
-    method === 'haversine'
-      ? geoService.haversineRoute(from, to, country, multiplier)
-      : { ...geoService.haversineRoute(from, to, country, c.roadFactor), source: 'estimate' };
+    cfg.method === 'haversine'
+      ? geoService.haversineRoute(from, to, country, cfg.multiplier, cfg.speedKmh)
+      : { ...geoService.haversineRoute(from, to, country, cfg.roadFactor, cfg.speedKmh), source: 'estimate' };
   const price = await pricingService.calculateErrandPrice({ country, distanceKm: route.distanceKm, userId: customerId });
   return { route, price };
 }

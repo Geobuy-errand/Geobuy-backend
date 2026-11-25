@@ -10,8 +10,18 @@ const createNotification = require('../utils/create-notification');
 const { formatMoney } = require('../utils/money');
 const { unitToKm } = require('../config/countries');
 
-const SEARCH_RADIUS_KM = Number(process.env.RUNNER_SEARCH_RADIUS_KM) || 25;
-const MAX_NOTIFIED = 10;
+const pricingService = require('./pricingService');
+const settingsService = require('./settingsService');
+
+// Search radius (per country, in miles/km) and the number of runners alerted
+// per errand are admin settings.
+async function matchingConfig(country) {
+  const [pricing, ops] = await Promise.all([pricingService.getPricing(country), settingsService.getOperations()]);
+  return {
+    radiusKm: unitToKm(pricing.runnerSearchRadius, country),
+    maxNotified: Math.max(1, Math.round(ops.maxRunnersNotified)),
+  };
+}
 
 /** Runners eligible to see/accept errands in a country. */
 function eligibleRunnerQuery(country) {
@@ -27,6 +37,7 @@ function eligibleRunnerQuery(country) {
 async function findNearbyRunners(errand) {
   const pickup = geoService.toPoint(errand.pickup?.coordinates);
   const country = errand.country || 'GB';
+  const { radiusKm, maxNotified } = await matchingConfig(country);
   let runners = [];
 
   if (pickup) {
@@ -35,7 +46,7 @@ async function findNearbyRunners(errand) {
       location: {
         $near: {
           $geometry: { type: 'Point', coordinates: [pickup.lng, pickup.lat] },
-          $maxDistance: SEARCH_RADIUS_KM * 1000,
+          $maxDistance: radiusKm * 1000,
         },
       },
     })
@@ -77,7 +88,7 @@ async function findNearbyRunners(errand) {
       return route.distanceKm <= unitToKm(radius, country);
     })
     .sort((a, b) => (a.route?.distanceKm ?? 1e9) - (b.route?.distanceKm ?? 1e9))
-    .slice(0, MAX_NOTIFIED);
+    .slice(0, maxNotified);
 }
 
 /** Notify nearby runners about a (paid) errand and store the match list. */

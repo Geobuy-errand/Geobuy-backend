@@ -13,8 +13,9 @@ const { countryOfUser, getCountry, normalizeCountry, unitToKm, formatDistance } 
 const { formatMoney, round2 } = require('../utils/money');
 
 const same = (a, b) => a && b && String(a?._id || a) === String(b?._id || b);
-const SETTINGS_FALLBACK_COMMISSION_RATE = 10; // % — commission invoice for legacy (paid-directly) bookings
+const settingsService = require('../services/settingsService');
 const { releaseServiceFunds, refundServicePayment } = require('../services/escrowService');
+const { verificationGate } = require('../services/verificationService');
 
 // ============================================================
 // SERVICE CRUD FUNCTIONS
@@ -192,8 +193,10 @@ exports.createServiceRequest = async (req, res) => {
 
     const country = countryOfUser(req.user);
     const pricing = await pricingService.getPricing(country);
-    const SERVICE_FEE = 0; // providers are paid directly; Geobuy invoices commission
-    const PLATFORM_FEE_PERCENTAGE = pricing.platformFeePercentage;
+    const ops = await settingsService.getOperations();
+    // No booking fee for customers; Geobuy earns the provider commission (admin setting).
+    const SERVICE_FEE = 0;
+    const PLATFORM_FEE_PERCENTAGE = pricing.providerCommissionPercentage;
 
     if (!category || !serviceType || !description) {
       return res.status(400).json({ message: 'Category, service type and description are required' });
@@ -226,7 +229,7 @@ exports.createServiceRequest = async (req, res) => {
       serviceFee: SERVICE_FEE,
       platformFeePercentage: PLATFORM_FEE_PERCENTAGE,
       status: 'pending',
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      expiresAt: settingsService.daysFromNow(ops.serviceRequestExpiryDays),
       isPublic: true,
     });
 
@@ -418,14 +421,21 @@ exports.submitQuote = async (req, res) => {
       return res.status(400).json({ message: 'This request is no longer accepting quotes' });
     }
 
-    // Check if provider was invited
-    const isInvited = serviceRequest.invitedProviders?.some(
-      p => p.providerId.toString() === req.user._id.toString()
-    );
+    // Invited providers, and providers the system matched to the request, can quote
+    const isInvited = serviceRequest.invitedProviders?.some((p) => same(p.providerId, req.user._id));
+    const isMatched = serviceRequest.matchedProviders?.some((p) => same(p.providerId, req.user._id));
 
-    if (!isInvited && req.user.role !== 'admin') {
+    if (!isInvited && !isMatched && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'You are not authorized to quote for this request' });
     }
+    if (isMatched && !isInvited) {
+      serviceRequest.invitedProviders = serviceRequest.invitedProviders || [];
+      serviceRequest.invitedProviders.push({ providerId: req.user._id, status: 'invited', invitedAt: new Date() });
+    }
+
+    // Identity check (Admin → Settings → Verification)
+    const gate = await verificationGate(req.user, 'provider');
+    if (gate) return res.status(403).json(gate);
 
     // Check if provider already submitted a quote
     const existingQuote = await Quote.findOne({
@@ -437,6 +447,7 @@ exports.submitQuote = async (req, res) => {
       return res.status(400).json({ message: 'You have already submitted a quote' });
     }
 
+    const { quoteExpiryDays } = await settingsService.getOperations();
     const quote = new Quote({
       serviceRequestId,
       providerId: req.user._id,
@@ -447,7 +458,7 @@ exports.submitQuote = async (req, res) => {
         startDate: availabilityStart,
         endDate: availabilityEnd,
       },
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      expiresAt: settingsService.daysFromNow(quoteExpiryDays),
       status: 'pending',
     });
 
@@ -532,10 +543,22 @@ exports.getQuotesForRequest = async (req, res) => {
     }
 
     const quotes = await Quote.find({ serviceRequestId: requestId })
-      .populate('providerId', 'fullName email phoneNumber averageRating totalReviews verificationBadges')
+      .populate('providerId', 'fullName email phoneNumber averageRating totalReviews verificationBadges verificationStatus')
       .sort({ amount: 1 });
 
-    res.json(quotes);
+    const isProviderViewer = req.user.role === 'provider';
+    const out = quotes
+      .filter((q) => !isProviderViewer || same(q.providerId, req.user._id))
+      .map((q) => {
+        const o = q.toObject();
+        o.lastOfferBy = lastOfferByFor(serviceRequest, q);
+        o.originalAmount = o.originalAmount ?? o.amount;
+        o.history = (serviceRequest.negotiationHistory || [])
+          .filter((h) => h.quoteId && same(h.quoteId, q._id))
+          .map((h) => ({ from: h.from, amount: h.offerAmount, message: h.message, status: h.status, at: h.timestamp }));
+        return o;
+      });
+    res.json(out);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -544,6 +567,101 @@ exports.getQuotesForRequest = async (req, res) => {
 // ============================================================
 // NEGOTIATION FUNCTIONS
 // ============================================================
+
+// Negotiation rules (customer ↔ provider, on one quote):
+//  - The provider's quote is the opening offer (lastOfferBy = 'provider').
+//  - Whoever did NOT make the latest offer can accept it, counter it or decline.
+//  - Customer accepts the provider's offer  -> booked at that price, customer pays.
+//  - Provider accepts the customer's counter -> booked at that price, customer pays.
+//  - The number of counter-offers is capped by settings (maxCounterOffers).
+
+const notifyBoth = (req, serviceRequest, quote, event, payload) => {
+  const io = req.app.get('io');
+  if (!io) return;
+  const data = { serviceRequestId: serviceRequest._id, quoteId: quote._id, ...payload };
+  io.to(`booking_${serviceRequest._id}`).emit(event, data);
+  io.to(`user_${serviceRequest.customerId?._id || serviceRequest.customerId}`).emit(event, data);
+  io.to(`user_${quote.providerId?._id || quote.providerId}`).emit(event, data);
+};
+
+// Who made the latest offer on a quote. Older quotes have no lastOfferBy,
+// so fall back to the negotiation history.
+const lastOfferByFor = (serviceRequest, quote) => {
+  const last = [...(serviceRequest.negotiationHistory || [])]
+    .reverse()
+    .find((h) => h.quoteId && same(h.quoteId, quote._id) && h.status === 'countered');
+  return last?.from || quote.lastOfferBy || 'provider';
+};
+
+// Book the provider at the quote's current amount. Used when the customer
+// accepts the provider's offer and when the provider accepts the customer's
+// counter-offer. Returns the claimed request, or null if someone else got there first.
+async function bookQuote(req, quote, serviceRequest, acceptedBy) {
+  const finalPrice = quote.amount;
+  const providerId = quote.providerId?._id || quote.providerId;
+  const split = await pricingService.splitServiceAmount(finalPrice, serviceRequest.country || 'GB');
+
+  const claimed = await ServiceRequest.findOneAndUpdate(
+    { _id: serviceRequest._id, status: { $in: ['pending', 'quotes_received', 'negotiating'] } },
+    {
+      $set: {
+        selectedProviderId: providerId,
+        selectedQuoteId: quote._id,
+        finalPrice,
+        status: 'provider_selected',
+        paymentStatus: 'pending',
+        platformFee: split.platformFee,
+        providerAmount: split.providerAmount,
+        platformFeePercentage: split.platformFeePercentage,
+      },
+      $push: {
+        negotiationHistory: {
+          from: acceptedBy,
+          userId: req.user._id,
+          message: `${acceptedBy === 'customer' ? 'Customer' : 'Provider'} accepted ${formatMoney(finalPrice, serviceRequest.currency)}`,
+          offerAmount: finalPrice,
+          quoteId: quote._id,
+          status: 'accepted',
+          timestamp: new Date(),
+        },
+      },
+    },
+    { new: true }
+  );
+  if (!claimed) return null;
+
+  quote.status = 'accepted';
+  quote.isSelected = true;
+  quote.selectedAt = new Date();
+  await quote.save();
+
+  await Quote.updateMany(
+    { serviceRequestId: serviceRequest._id, _id: { $ne: quote._id }, status: 'pending' },
+    { $set: { status: 'rejected' } }
+  );
+
+  const price = formatMoney(finalPrice, claimed.currency);
+  const provider = quote.providerId?.fullName ? quote.providerId : await User.findById(providerId).select('fullName');
+  await createNotification(
+    providerId,
+    'quote_accepted',
+    acceptedBy === 'customer' ? '🎉 Quote Accepted!' : '🤝 Deal agreed',
+    acceptedBy === 'customer'
+      ? `Your quote of ${price} has been accepted for ${claimed.serviceType}. We'll tell you as soon as the customer has paid — please don't start before then.`
+      : `You accepted ${price} for ${claimed.serviceType}. We'll tell you as soon as the customer has paid — please don't start before then.`,
+    { serviceRequestId: claimed._id, customerId: claimed.customerId, finalPrice }
+  );
+  await createNotification(
+    claimed.customerId,
+    'service_payment_required',
+    acceptedBy === 'customer' ? '✅ Provider booked — payment needed' : '🤝 Provider accepted your offer — payment needed',
+    `${acceptedBy === 'customer' ? 'You booked' : 'Booked:'} ${provider?.fullName || 'the provider'} for ${price}. Pay now to confirm the booking — your money is held securely until you confirm the job is done.`,
+    { serviceRequestId: claimed._id, providerId, finalPrice }
+  );
+
+  notifyBoth(req, claimed, quote, 'quote-accepted', { providerId, amount: finalPrice, currency: claimed.currency, acceptedBy });
+  return claimed;
+}
 
 // Negotiate quote (counter-offer)
 exports.negotiateQuote = async (req, res) => {
@@ -559,16 +677,17 @@ exports.negotiateQuote = async (req, res) => {
       return res.status(404).json({ message: 'Service request not found' });
     }
 
-    // Check authorization
-    const isCustomer = serviceRequest.customerId.toString() === req.user._id.toString();
-    const isProvider = quote.providerId.toString() === req.user._id.toString();
-
+    const isCustomer = same(serviceRequest.customerId, req.user._id);
+    const isProvider = same(quote.providerId, req.user._id);
     if (!isCustomer && !isProvider) {
       return res.status(403).json({ message: 'Access denied' });
     }
-
-    // Determine who is sending the counter-offer
     const from = isCustomer ? 'customer' : 'provider';
+
+    const features = await settingsService.getFeatures();
+    if (features.negotiationEnabled === false) {
+      return res.status(400).json({ message: 'Price negotiation is turned off. Accept or decline the quote.' });
+    }
 
     const offer = round2(parseFloat(counterAmount));
     if (!Number.isFinite(offer) || offer <= 0) {
@@ -577,58 +696,55 @@ exports.negotiateQuote = async (req, res) => {
     if (!['pending', 'quotes_received', 'negotiating'].includes(serviceRequest.status) || quote.status !== 'pending') {
       return res.status(400).json({ message: 'This quote can no longer be negotiated' });
     }
-    const currency = serviceRequest.currency || 'GBP';
 
-    // Update quote
+    // Take turns: you can't counter your own latest offer.
+    const lastBy = lastOfferByFor(serviceRequest, quote);
+    if (lastBy === from) {
+      return res.status(400).json({
+        message: from === 'customer'
+          ? 'Waiting for the provider to respond to your offer'
+          : 'Waiting for the customer to respond to your offer',
+      });
+    }
+    if (offer === round2(quote.amount)) {
+      return res.status(400).json({ message: 'That is the current price — accept it instead of countering' });
+    }
+
+    const { maxCounterOffers } = await settingsService.getOperations();
+    if (maxCounterOffers && (quote.counterCount || 0) >= maxCounterOffers) {
+      return res.status(400).json({ message: `The limit of ${maxCounterOffers} counter-offers has been reached. Accept or decline the current price.` });
+    }
+
+    const currency = serviceRequest.currency || 'GBP';
+    if (quote.originalAmount == null) quote.originalAmount = quote.amount;
     quote.amount = offer;
-    quote.status = 'pending';
-    quote.message = message || quote.message;
+    quote.lastOfferBy = from;
+    quote.counterCount = (quote.counterCount || 0) + 1;
     await quote.save();
 
-    // Add to negotiation history
-    if (!serviceRequest.negotiationHistory) {
-      serviceRequest.negotiationHistory = [];
-    }
+    serviceRequest.negotiationHistory = serviceRequest.negotiationHistory || [];
     serviceRequest.negotiationHistory.push({
       from,
       userId: req.user._id,
-      message: message || `${from} offered ${formatMoney(offer, currency)}`,
+      message: message || `${from === 'customer' ? 'Customer' : 'Provider'} offered ${formatMoney(offer, currency)}`,
       offerAmount: offer,
       quoteId: quote._id,
       status: 'countered',
+      timestamp: new Date(),
     });
     serviceRequest.status = 'negotiating';
     await serviceRequest.save();
 
-    // Notify the other party using helper
     const recipientId = isCustomer ? quote.providerId : serviceRequest.customerId;
-    const senderName = isCustomer ? req.user.fullName : 'Provider';
-    
     await createNotification(
       recipientId,
       'quote_countered',
       '🔄 Counter-Offer Received',
-      `${senderName} has made a counter-offer of ${formatMoney(offer, currency)}`,
-      { 
-        serviceRequestId: serviceRequest._id, 
-        quoteId: quote._id,
-        amount: counterAmount,
-        from: from,
-        message: message || '',
-      }
+      `${req.user.fullName || (isCustomer ? 'The customer' : 'The provider')} offered ${formatMoney(offer, currency)} for ${serviceRequest.serviceType}. Accept it, counter or decline.`,
+      { serviceRequestId: serviceRequest._id, quoteId: quote._id, amount: offer, from, message: message || '' }
     );
 
-    // Emit socket event
-    const io = req.app.get('io');
-    if (io) {
-      io.to(`booking_${serviceRequest._id}`).emit('negotiation-update', {
-        serviceRequestId: serviceRequest._id,
-        quoteId: quote._id,
-        amount: counterAmount,
-        from,
-        message,
-      });
-    }
+    notifyBoth(req, serviceRequest, quote, 'negotiation-update', { amount: offer, from, message });
 
     res.json({
       message: 'Counter-offer sent',
@@ -641,7 +757,7 @@ exports.negotiateQuote = async (req, res) => {
   }
 };
 
-// Accept quote
+// Accept quote (customer accepts the provider's current offer)
 exports.acceptQuote = async (req, res) => {
   try {
     const { quoteId } = req.body;
@@ -667,75 +783,13 @@ exports.acceptQuote = async (req, res) => {
     }
 
     // The customer can't accept their own counter-offer — the provider must respond first.
-    const lastForQuote = [...(serviceRequest.negotiationHistory || [])]
-      .reverse()
-      .find((h) => h.quoteId && same(h.quoteId, quote._id));
-    if (lastForQuote?.from === 'customer') {
+    if (lastOfferByFor(serviceRequest, quote) === 'customer') {
       return res.status(400).json({ message: 'Waiting for the provider to respond to your counter-offer' });
     }
 
-    // The agreed price is the quote's current amount. A client-sent
-    // `finalPrice` is ignored (it used to let the customer set any price).
-    const finalPrice = quote.amount;
-    const providerId = quote.providerId._id;
-
-    // The customer now pays through Geobuy (escrow). The provider's share is
-    // credited to their wallet when the customer confirms the job is done.
-    const split = await pricingService.splitServiceAmount(finalPrice, serviceRequest.country || 'GB');
-
-    // Atomically claim the request so two quotes can't both be accepted.
-    const claimed = await ServiceRequest.findOneAndUpdate(
-      { _id: serviceRequest._id, status: { $in: ['pending', 'quotes_received', 'negotiating'] } },
-      {
-        $set: {
-          selectedProviderId: providerId,
-          selectedQuoteId: quote._id,
-          finalPrice,
-          status: 'provider_selected',
-          paymentStatus: 'pending',
-          platformFee: split.platformFee,
-          providerAmount: split.providerAmount,
-          platformFeePercentage: split.platformFeePercentage,
-        },
-      },
-      { new: true }
-    );
+    // The agreed price is the quote's current amount; a client-sent price is ignored.
+    const claimed = await bookQuote(req, quote, serviceRequest, 'customer');
     if (!claimed) return res.status(409).json({ message: 'This request was updated. Please refresh.' });
-
-    quote.status = 'accepted';
-    quote.isSelected = true;
-    quote.selectedAt = new Date();
-    await quote.save();
-
-    // Close the other quotes
-    await Quote.updateMany(
-      { serviceRequestId: serviceRequest._id, _id: { $ne: quote._id }, status: 'pending' },
-      { $set: { status: 'rejected' } }
-    );
-
-    const price = formatMoney(finalPrice, claimed.currency);
-    await createNotification(
-      providerId,
-      'quote_accepted',
-      '🎉 Quote Accepted!',
-      `Your quote of ${price} has been accepted for ${claimed.serviceType}. We'll tell you as soon as the customer has paid — please don't start before then.`,
-      { serviceRequestId: claimed._id, customerId: req.user._id, customerName: req.user.fullName, finalPrice }
-    );
-
-    await createNotification(
-      req.user._id,
-      'service_payment_required',
-      '✅ Provider booked — payment needed',
-      `You booked ${quote.providerId.fullName || 'the provider'} for ${price}. Pay now to confirm the booking — your money is held securely until you confirm the job is done.`,
-      { serviceRequestId: claimed._id, providerId, finalPrice }
-    );
-
-    const io = req.app.get('io');
-    if (io) {
-      const payload = { serviceRequestId: claimed._id, providerId, amount: finalPrice, currency: claimed.currency };
-      io.to(`booking_${claimed._id}`).emit('quote-accepted', payload);
-      io.to(`user_${providerId}`).emit('quote-accepted', payload);
-    }
 
     res.json({
       message: 'Quote accepted successfully',
@@ -743,6 +797,37 @@ exports.acceptQuote = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Accept quote error:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Provider accepts the customer's counter-offer. The job is booked at that
+// price and the customer is asked to pay.
+exports.acceptCounterOffer = async (req, res) => {
+  try {
+    const { quoteId } = req.body;
+    const quote = await Quote.findById(quoteId).populate('providerId', 'fullName email');
+    if (!quote) return res.status(404).json({ message: 'Quote not found' });
+    if (!same(quote.providerId, req.user._id)) return res.status(403).json({ message: 'Access denied' });
+
+    const serviceRequest = await ServiceRequest.findById(quote.serviceRequestId);
+    if (!serviceRequest) return res.status(404).json({ message: 'Service request not found' });
+
+    if (!['pending', 'quotes_received', 'negotiating'].includes(serviceRequest.status) || quote.status !== 'pending') {
+      return res.status(400).json({ message: 'This offer is no longer open' });
+    }
+    if (lastOfferByFor(serviceRequest, quote) !== 'customer') {
+      return res.status(400).json({ message: 'There is no counter-offer from the customer to accept' });
+    }
+    const gate = await verificationGate(req.user, 'provider');
+    if (gate) return res.status(403).json(gate);
+
+    const claimed = await bookQuote(req, quote, serviceRequest, 'provider');
+    if (!claimed) return res.status(409).json({ message: 'The customer has booked someone else or closed this request.' });
+
+    res.json({ message: 'Offer accepted — the customer has been asked to pay', serviceRequest: claimed });
+  } catch (error) {
+    console.error('❌ Accept counter-offer error:', error);
     res.status(500).json({ message: error.message });
   }
 };
@@ -769,37 +854,40 @@ exports.rejectQuote = async (req, res) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
+    if (quote.status !== 'pending' || !['pending', 'quotes_received', 'negotiating'].includes(serviceRequest.status)) {
+      return res.status(400).json({ message: 'This quote can no longer be declined' });
+    }
+
     quote.status = 'rejected';
     await quote.save();
 
-    // Add to negotiation history
-    if (!serviceRequest.negotiationHistory) {
-      serviceRequest.negotiationHistory = [];
-    }
+    serviceRequest.negotiationHistory = serviceRequest.negotiationHistory || [];
     serviceRequest.negotiationHistory.push({
       from: isCustomer ? 'customer' : 'provider',
       userId: req.user._id,
-      message: reason || 'Quote rejected',
+      message: reason || (isCustomer ? 'Customer declined the quote' : 'Provider withdrew the quote'),
+      quoteId: quote._id,
       status: 'rejected',
+      timestamp: new Date(),
     });
+    // Nothing left to negotiate? Go back to waiting for quotes.
+    const stillOpen = await Quote.countDocuments({ serviceRequestId: serviceRequest._id, status: 'pending' });
+    if (serviceRequest.status === 'negotiating' || stillOpen === 0) {
+      serviceRequest.status = stillOpen > 0 ? 'quotes_received' : 'pending';
+    }
     await serviceRequest.save();
 
-    // Notify the other party using helper
     const recipientId = isCustomer ? quote.providerId : serviceRequest.customerId;
-    const senderName = isCustomer ? 'Customer' : 'Provider';
-    
     await createNotification(
       recipientId,
       'quote_rejected',
-      '❌ Quote Rejected',
-      `Your quote has been rejected${reason ? `: ${reason}` : ''}`,
-      { 
-        serviceRequestId: serviceRequest._id,
-        quoteId: quote._id,
-        reason: reason || 'No reason provided',
-        rejectedBy: senderName,
-      }
+      isCustomer ? '❌ Quote declined' : '❌ Provider withdrew their quote',
+      isCustomer
+        ? `The customer declined your quote for ${serviceRequest.serviceType}${reason ? `: ${reason}` : ''}`
+        : `${req.user.fullName || 'A provider'} withdrew their quote for ${serviceRequest.serviceType}${reason ? `: ${reason}` : ''}`,
+      { serviceRequestId: serviceRequest._id, quoteId: quote._id, reason: reason || '' }
     );
+    notifyBoth(req, serviceRequest, quote, 'negotiation-update', { from: isCustomer ? 'customer' : 'provider', declined: true });
 
     res.json({
       message: 'Quote rejected',
@@ -834,14 +922,31 @@ exports.getServiceRequestById = async (req, res) => {
     // Check authorization
     if (serviceRequest.customerId._id.toString() !== req.user._id.toString() && 
         req.user.role !== 'admin') {
-      // Check if user is an invited provider
-      const isInvited = serviceRequest.invitedProviders?.some((p) => same(p.providerId, req.user._id));
+      // Invited, matched or booked providers can see it
+      const isInvited = serviceRequest.invitedProviders?.some((p) => same(p.providerId, req.user._id))
+        || serviceRequest.matchedProviders?.some((p) => same(p.providerId, req.user._id))
+        || same(serviceRequest.selectedProviderId, req.user._id);
       if (!isInvited) {
         return res.status(403).json({ message: 'Access denied' });
       }
     }
 
-    res.json(serviceRequest);
+    const out = serviceRequest.toObject();
+    // Providers only see their own quote and negotiation
+    if (req.user.role === 'provider') {
+      const q = await Quote.findOne({ serviceRequestId: serviceRequest._id, providerId: req.user._id }).lean();
+      out.negotiationHistory = (out.negotiationHistory || []).filter((h) => q && h.quoteId && same(h.quoteId, q._id));
+      out.invitedProviders = (out.invitedProviders || []).filter((p) => same(p.providerId, req.user._id));
+      out.matchedProviders = undefined;
+      out.myQuote = q
+        ? { _id: q._id, amount: q.amount, originalAmount: q.originalAmount ?? q.amount, status: q.status, lastOfferBy: lastOfferByFor(serviceRequest, q), counterCount: q.counterCount || 0, message: q.message, estimatedDuration: q.estimatedDuration }
+        : null;
+      out.isMine = !!same(serviceRequest.selectedProviderId, req.user._id);
+      out.canQuote = ['pending', 'quotes_received', 'negotiating'].includes(out.status) && !q
+        && ((serviceRequest.invitedProviders || []).some((p) => same(p.providerId, req.user._id))
+          || (serviceRequest.matchedProviders || []).some((p) => same(p.providerId, req.user._id)));
+    }
+    res.json(out);
   } catch (error) {
     console.error('Get service request by ID error:', error);
     res.status(500).json({ message: error.message });
@@ -867,21 +972,58 @@ exports.getMyServiceRequests = async (req, res) => {
 // Get service requests for a provider (matched or invited)
 exports.getProviderServiceRequests = async (req, res) => {
   try {
-    // Find requests where provider is invited or matched
+    // Requests this provider was invited to or matched with
     const serviceRequests = await ServiceRequest.find({
       $or: [
         { 'matchedProviders.providerId': req.user._id },
         { 'invitedProviders.providerId': req.user._id },
+        { selectedProviderId: req.user._id },
       ],
-      status: { 
-        $in: ['pending', 'quotes_received', 'negotiating', 'provider_selected', 'in_progress', 'awaiting_confirmation', 'completed'] 
+      status: {
+        $in: ['pending', 'quotes_received', 'negotiating', 'provider_selected', 'in_progress', 'awaiting_confirmation', 'completed', 'disputed'],
       },
     })
       .populate('customerId', 'fullName email phoneNumber')
       .populate('selectedProviderId', 'fullName email phoneNumber')
-      .sort({ createdAt: -1 });
+      .sort({ updatedAt: -1 });
 
-    res.json(serviceRequests);
+    // This provider's quote on each request, and what they need to do next
+    const quotes = await Quote.find({ providerId: req.user._id, serviceRequestId: { $in: serviceRequests.map((r) => r._id) } }).lean();
+    const byRequest = new Map(quotes.map((q) => [String(q.serviceRequestId), q]));
+    const open = ['pending', 'quotes_received', 'negotiating'];
+
+    const out = serviceRequests.map((doc) => {
+      const r = doc.toObject();
+      const q = byRequest.get(String(r._id));
+      const mine = !!same(r.selectedProviderId, req.user._id);
+      const invited = (r.invitedProviders || []).some((p) => same(p.providerId, req.user._id));
+      // Hide other providers' quotes and contact details
+      r.invitedProviders = (r.invitedProviders || []).filter((p) => same(p.providerId, req.user._id));
+      r.matchedProviders = undefined;
+      r.negotiationHistory = (r.negotiationHistory || []).filter((h) => q && h.quoteId && same(h.quoteId, q._id));
+      r.myQuote = q
+        ? { _id: q._id, amount: q.amount, originalAmount: q.originalAmount ?? q.amount, status: q.status, lastOfferBy: lastOfferByFor(doc, q), counterCount: q.counterCount || 0, message: q.message }
+        : null;
+      r.isMine = mine;
+      const matched = (doc.matchedProviders || []).some((p) => same(p.providerId, req.user._id));
+      r.canQuote = open.includes(r.status) && !q && (invited || matched);
+      r.lostToOther = !!r.selectedProviderId && !mine;
+      // pending_quote | awaiting_customer | respond_to_counter | declined | booked | lost
+      r.providerStage = mine
+        ? 'booked'
+        : r.lostToOther || (q && q.status === 'rejected' && !open.includes(r.status))
+          ? 'lost'
+          : !q
+            ? (open.includes(r.status) ? 'pending_quote' : 'closed')
+            : q.status === 'rejected'
+              ? 'declined'
+              : r.myQuote.lastOfferBy === 'customer'
+                ? 'respond_to_counter'
+                : 'awaiting_customer';
+      return r;
+    });
+
+    res.json(out);
   } catch (error) {
     console.error('Get provider service requests error:', error);
     res.status(500).json({ message: error.message });
@@ -997,7 +1139,10 @@ exports.completeServiceRequest = async (req, res) => {
       try {
         const exists = await Commission.findOne({ serviceRequestId: serviceRequest._id });
         if (!exists) {
-          const rate = SETTINGS_FALLBACK_COMMISSION_RATE;
+          const [{ providerCommissionPercentage: rate }, { commissionDueDays }] = await Promise.all([
+            pricingService.getPricing(serviceRequest.country || 'GB'),
+            settingsService.getOperations(),
+          ]);
           await Commission.create({
             providerId: serviceRequest.selectedProviderId,
             serviceRequestId: serviceRequest._id,
@@ -1005,7 +1150,7 @@ exports.completeServiceRequest = async (req, res) => {
             currency: serviceRequest.currency || 'GBP',
             commissionRate: rate,
             commissionAmount: round2((serviceRequest.finalPrice * rate) / 100),
-            dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            dueDate: settingsService.daysFromNow(commissionDueDays),
             status: 'pending',
             notes: 'Auto-generated on completion',
           });
@@ -1069,6 +1214,8 @@ exports.startServiceRequest = async (req, res) => {
       `${req.user.fullName} has started working on your service request`,
       { serviceRequestId: serviceRequest._id }
     );
+    const io = req.app.get('io');
+    if (io) io.to(`user_${serviceRequest.customerId}`).emit('service-started', { serviceRequestId: serviceRequest._id });
 
     res.json({
       message: 'Service started',
@@ -1313,7 +1460,8 @@ exports.getServiceProviders = async (req, res) => {
     let providers;
 
     if (hasPoint) {
-      const radiusKm = unitToKm(parseFloat(radius) || (country === 'NG' ? 15 : 10), country);
+      const defaultRadius = (await pricingService.getPricing(country)).providerSearchRadius;
+      const radiusKm = unitToKm(parseFloat(radius) || defaultRadius, country);
       // $near can't be combined with $or, so filter country after the geo query.
       const geoQuery = { ...query };
       delete geoQuery.$or;

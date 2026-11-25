@@ -604,6 +604,14 @@ async function handleCheckoutSessionCompleted(session) {
   console.log("💰 Checkout session completed:", session.id);
   const metadata = session.metadata || {};
 
+  // ---- Identity check fee paid by a provider / runner ----
+  if (metadata.type === "identity_check" && metadata.identityCheckId && session.payment_status === "paid") {
+    const IdentityCheck = require("../models/IdentityCheck.model");
+    const check = await IdentityCheck.findById(metadata.identityCheckId);
+    if (check) await require("../services/verificationService").markPaidAndRun(check, (session.amount_total || 0) / 100, null);
+    return;
+  }
+
   // ---- Subscriptions (mode=subscription) ----
   if (session.mode === "subscription") {
     await activateStripeSubscription(session);

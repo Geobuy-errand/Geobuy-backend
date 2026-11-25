@@ -4,7 +4,8 @@ const ErrandRunnerProfile = require('../models/ErrandRunnerProfile.model');
 const Errand = require('../models/Errand.model');
 const ServiceRequest = require('../models/ServiceRequest.model');
 const geoService = require('../services/geoService');
-const { countryOfUser, isWithinCountry } = require('../config/countries');
+const { countryOfUser, isWithinCountry, unitToKm } = require('../config/countries');
+const pricingService = require('../services/pricingService');
 
 const PUBLIC_PROFILE_FIELDS = 'fullName role averageRating totalReviews verificationBadges serviceCategories country address.town address.state createdAt';
 
@@ -191,7 +192,10 @@ exports.updateErrandRunnerAvailability = async (req, res) => {
 
 exports.getAvailableErrandRunners = async (req, res) => {
   try {
-    const { lat, lng, maxDistance = 10 } = req.query;
+    const { lat, lng } = req.query;
+    // km; defaults to the runner search radius for the user's country (Admin → Settings)
+    const country = countryOfUser(req.user);
+    const maxDistance = Number(req.query.maxDistance) || unitToKm((await pricingService.getPricing(country)).runnerSearchRadius, country);
 
     let query = {
       isActive: true,
@@ -296,7 +300,10 @@ exports.updateAvailability = async (req, res) => {
 // Get available providers
 exports.getAvailableProviders = async (req, res) => {
   try {
-    const { lat, lng, maxDistance = 10, serviceId } = req.query;
+    const { lat, lng, serviceId } = req.query;
+    // km; defaults to the provider search radius for the user's country (Admin → Settings)
+    const country = req.user ? countryOfUser(req.user) : countryOfUser({ country: req.query.country });
+    const maxDistance = Number(req.query.maxDistance) || unitToKm((await pricingService.getPricing(country)).providerSearchRadius, country);
 
     let query = {
       role: 'provider',

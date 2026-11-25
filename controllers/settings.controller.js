@@ -2,24 +2,12 @@ const Settings = require('../models/Setting.model');
 const pricingService = require('../services/pricingService');
 const { COUNTRIES, normalizeCountry } = require('../config/countries');
 
-const PUBLIC_PRICING_FIELDS = [
-  'baseFee',
-  'connectionFee',
-  'subscriptionDiscount',
-  'heavyItemFee',
-  'waitTimeFeePerMin',
-  'waitTimeFreeMin',
-  'peakUrgentFee',
-  'extraStopFee',
-  'distanceTiers',
-  'platformFeePercentage',
-  'minimumFare',
-  'minWithdrawal',
-  'distanceTierMode',
-  'distanceMethod',
-  'distanceMultiplier',
-  'providerCommissionPercentage',
-];
+const settingsService = require('../services/settingsService');
+const { COUNTRY_DEFAULTS } = require('../config/settingsDefaults');
+
+// Every per-country pricing setting is safe to show publicly
+// (the list follows config/settingsDefaults.js automatically).
+const PUBLIC_PRICING_FIELDS = Object.keys(COUNTRY_DEFAULTS.GB);
 
 function pickPricing(p) {
   const obj = p?.toObject ? p.toObject() : p || {};
@@ -71,7 +59,20 @@ exports.getSettings = async (req, res) => {
         contactPhone: country === 'NG' ? settings.platform.contactPhoneNG : settings.platform.contactPhone,
         enabledCountries: settings.platform.enabledCountries || ['GB', 'NG'],
       },
-      features: settings.features,
+      features: await settingsService.getFeatures(),
+      // Time limits & policies shown in the app (QR expiry, cancellation notice, …)
+      operations: await settingsService.getOperations(),
+      // Who pays for ID checks and how much, for this country
+      verification: await (async () => {
+        const v = await settingsService.getVerification();
+        return {
+          requiredForProviders: v.requiredForProviders,
+          requiredForRunners: v.requiredForRunners,
+          paidBy: v.paidBy,
+          fee: country === 'NG' ? v.feeNG : v.feeGB,
+          provider: country === 'NG' ? 'dojah' : 'didit',
+        };
+      })(),
     });
   } catch (error) {
     console.error('Get settings error:', error);
@@ -90,22 +91,35 @@ exports.getAllSettings = async (req, res) => {
   }
 };
 
-// PUT /settings — admin. Accepts { pricing, pricingNG, platform, notifications, features }
+// PUT /settings — admin. Accepts { pricing, pricingNG, operations, platform, notifications, features }
 exports.updateSettings = async (req, res) => {
   try {
-    const { pricing, pricingNG, platform, notifications, features } = req.body;
+    const { pricing, pricingNG, operations, platform, notifications, features, verification } = req.body;
     const settings = await Settings.getSettings();
 
     // The old code spread Mongoose subdocuments (`{...settings.pricing}`),
     // which copies internal fields rather than values.
     mergeInto(settings, 'pricing', pricing);
     mergeInto(settings, 'pricingNG', pricingNG);
+    mergeInto(settings, 'operations', operations);
     mergeInto(settings, 'platform', platform);
     mergeInto(settings, 'notifications', notifications);
     mergeInto(settings, 'features', features);
+    mergeInto(settings, 'verification', verification);
 
     settings.updatedBy = req.user._id;
     settings.updatedAt = new Date();
+    // Cross-field checks the schema can't express
+    for (const key of ['pricing', 'pricingNG']) {
+      const p = settings[key] || {};
+      if (Number(p.negotiationMinPercent) > Number(p.negotiationMaxPercent)) {
+        return res.status(400).json({ message: 'Negotiation: the lowest offer % must not be above the highest offer %' });
+      }
+      if (Number(p.maxWithdrawal) > 0 && Number(p.maxWithdrawal) < Number(p.minWithdrawal)) {
+        return res.status(400).json({ message: 'Maximum withdrawal must be 0 (no limit) or at least the minimum withdrawal' });
+      }
+    }
+
     await settings.save();
 
     res.json({ message: 'Settings updated successfully', settings });

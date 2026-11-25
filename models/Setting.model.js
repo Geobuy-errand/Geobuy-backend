@@ -1,209 +1,97 @@
 const mongoose = require('mongoose');
+const {
+  COUNTRY_DEFAULTS,
+  OPERATIONS_DEFAULTS,
+  FEATURE_DEFAULTS,
+  PLATFORM_DEFAULTS,
+  NOTIFICATION_DEFAULTS,
+  VERIFICATION_DEFAULTS,
+  LIMITS,
+} = require('../config/settingsDefaults');
+
+// ============================================================
+// Platform settings — a single document, edited in Admin → Settings.
+// All defaults come from config/settingsDefaults.js.
+// ============================================================
+
+const money = (def) => ({ type: Number, default: def, min: 0 });
+const count = (def) => ({ type: Number, default: def, min: 0 });
+const percent = (def) => ({ type: Number, default: def, ...LIMITS.percent });
+const ranged = (def, key) => ({ type: Number, default: def, ...LIMITS[key] });
+
+/** Pricing block for one country. UK tiers are in miles, Nigerian tiers in km. */
+function countryPricing(code) {
+  const d = COUNTRY_DEFAULTS[code];
+  const maxKey = code === 'NG' ? 'maxKm' : 'maxMiles';
+  const rateKey = code === 'NG' ? 'ratePerKm' : 'ratePerMile';
+  const tier = (i, last = false) => ({
+    ...(last ? {} : { [maxKey]: { type: Number, default: d.distanceTiers[i].upTo } }),
+    [rateKey]: { type: Number, default: d.distanceTiers[i].rate },
+  });
+
+  return {
+    // errand prices
+    baseFee: money(d.baseFee),
+    minimumFare: money(d.minimumFare),
+    heavyItemFee: money(d.heavyItemFee),
+    peakUrgentFee: money(d.peakUrgentFee),
+    extraStopFee: money(d.extraStopFee),
+    waitTimeFeePerMin: money(d.waitTimeFeePerMin),
+    waitTimeFreeMin: count(d.waitTimeFreeMin),
+    subscriptionDiscount: percent(d.subscriptionDiscount),
+    // progressive: each distance band charged at its own rate (no price drop
+    // at band edges). flat: legacy — whole distance at one band's rate.
+    distanceTierMode: { type: String, enum: ['progressive', 'flat'], default: d.distanceTierMode },
+    distanceTiers: { tier1: tier(0), tier2: tier(1), tier3: tier(2), tier4: tier(3, true) },
+
+    // Geobuy's share
+    platformFeePercentage: percent(d.platformFeePercentage),
+    providerCommissionPercentage: percent(d.providerCommissionPercentage),
+    connectionFee: money(d.connectionFee),
+
+    // wallets
+    minWithdrawal: money(d.minWithdrawal),
+    maxWithdrawal: money(d.maxWithdrawal), // 0 = no limit
+
+    // negotiation band (% of the quoted price)
+    negotiationMinPercent: ranged(d.negotiationMinPercent, 'negotiationMinPercent'),
+    negotiationMaxPercent: ranged(d.negotiationMaxPercent, 'negotiationMaxPercent'),
+
+    // matching radii (country's unit)
+    runnerSearchRadius: count(d.runnerSearchRadius),
+    providerSearchRadius: count(d.providerSearchRadius),
+
+    // distance & travel time
+    //   road      — road routing (Google / OSRM), haversine only as a fallback
+    //   haversine — straight-line distance (Haversine formula) x distanceMultiplier
+    distanceMethod: { type: String, enum: ['road', 'haversine'], default: d.distanceMethod },
+    distanceMultiplier: ranged(d.distanceMultiplier, 'distanceMultiplier'),
+    roadFactor: ranged(d.roadFactor, 'roadFactor'),
+    fallbackSpeedKmh: ranged(d.fallbackSpeedKmh, 'fallbackSpeedKmh'),
+    trafficMultiplier: ranged(d.trafficMultiplier, 'trafficMultiplier'),
+  };
+}
+
+const fromDefaults = (defaults, type = Number) =>
+  Object.fromEntries(
+    Object.entries(defaults).map(([k, v]) => [
+      k,
+      Array.isArray(v) ? { type: [String], default: v } : { type: typeof v === 'boolean' ? Boolean : typeof v === 'string' ? String : type, default: v, ...(typeof v === 'number' ? { min: 0 } : {}) },
+    ])
+  );
 
 const settingsSchema = new mongoose.Schema(
   {
-    // Pricing Settings
-    pricing: {
-      baseFee: {
-        type: Number,
-        default: 3.99,
-        min: 0,
-      },
-      connectionFee: {
-        type: Number,
-        default: 1.99,
-        min: 0,
-      },
-      subscriptionDiscount: {
-        type: Number,
-        default: 20,
-        min: 0,
-        max: 100,
-      },
-      heavyItemFee: {
-        type: Number,
-        default: 2.99,
-        min: 0,
-      },
-      waitTimeFeePerMin: {
-        type: Number,
-        default: 0.30,
-        min: 0,
-      },
-      waitTimeFreeMin: {
-        type: Number,
-        default: 5,
-        min: 0,
-      },
-      peakUrgentFee: {
-        type: Number,
-        default: 1.99,
-        min: 0,
-      },
-      extraStopFee: {
-        type: Number,
-        default: 1.50,
-        min: 0,
-      },
-      distanceTiers: {
-        tier1: {
-          maxMiles: { type: Number, default: 3 },
-          ratePerMile: { type: Number, default: 0.80 },
-        },
-        tier2: {
-          maxMiles: { type: Number, default: 10 },
-          ratePerMile: { type: Number, default: 0.70 },
-        },
-        tier3: {
-          maxMiles: { type: Number, default: 20 },
-          ratePerMile: { type: Number, default: 0.60 },
-        },
-        tier4: {
-          ratePerMile: { type: Number, default: 0.50 },
-        },
-      },
-      platformFeePercentage: {
-        type: Number,
-        default: 20,
-        min: 0,
-        max: 100,
-      },
-      minimumFare: { type: Number, default: 0, min: 0 },
-      minWithdrawal: { type: Number, default: 10, min: 0 },
-      // progressive: each distance band charged at its own rate (no price drop
-      // at band edges). flat: legacy — whole distance at one band's rate.
-      distanceTierMode: { type: String, enum: ['progressive', 'flat'], default: 'progressive' },
-      // How errand distance is measured:
-      //   road      — road routing (Google / OSRM), haversine only as a fallback
-      //   haversine — straight-line distance (Haversine formula) x distanceMultiplier
-      distanceMethod: { type: String, enum: ['road', 'haversine'], default: 'road' },
-      // Only used with the haversine method. 1 = pure straight line.
-      distanceMultiplier: { type: Number, default: 1, min: 1, max: 3 },
-      // Geobuy's share of service (provider) bookings paid through the app.
-      providerCommissionPercentage: { type: Number, default: 10, min: 0, max: 100 },
+    pricing: countryPricing('GB'), // United Kingdom (GBP, miles)
+    pricingNG: countryPricing('NG'), // Nigeria (NGN, km)
+    operations: fromDefaults(OPERATIONS_DEFAULTS), // time limits & policies (both countries)
+    platform: fromDefaults(PLATFORM_DEFAULTS),
+    notifications: fromDefaults(NOTIFICATION_DEFAULTS),
+    features: fromDefaults(FEATURE_DEFAULTS),
+    verification: {
+      ...fromDefaults(VERIFICATION_DEFAULTS),
+      paidBy: { type: String, enum: ['platform', 'worker'], default: VERIFICATION_DEFAULTS.paidBy },
     },
-
-    // ---------------- Nigeria pricing (NGN, distances in km) ----------------
-    pricingNG: {
-      baseFee: { type: Number, default: 1500, min: 0 },
-      connectionFee: { type: Number, default: 1000, min: 0 },
-      subscriptionDiscount: { type: Number, default: 20, min: 0, max: 100 },
-      heavyItemFee: { type: Number, default: 1000, min: 0 },
-      waitTimeFeePerMin: { type: Number, default: 50, min: 0 },
-      waitTimeFreeMin: { type: Number, default: 10, min: 0 },
-      peakUrgentFee: { type: Number, default: 1000, min: 0 },
-      extraStopFee: { type: Number, default: 500, min: 0 },
-      distanceTiers: {
-        tier1: {
-          maxKm: { type: Number, default: 5 },
-          ratePerKm: { type: Number, default: 200 },
-        },
-        tier2: {
-          maxKm: { type: Number, default: 15 },
-          ratePerKm: { type: Number, default: 150 },
-        },
-        tier3: {
-          maxKm: { type: Number, default: 30 },
-          ratePerKm: { type: Number, default: 120 },
-        },
-        tier4: {
-          ratePerKm: { type: Number, default: 100 },
-        },
-      },
-      platformFeePercentage: { type: Number, default: 20, min: 0, max: 100 },
-      minimumFare: { type: Number, default: 0, min: 0 },
-      minWithdrawal: { type: Number, default: 1000, min: 0 },
-      distanceTierMode: { type: String, enum: ['progressive', 'flat'], default: 'progressive' },
-      distanceMethod: { type: String, enum: ['road', 'haversine'], default: 'haversine' },
-      distanceMultiplier: { type: Number, default: 1, min: 1, max: 3 },
-      providerCommissionPercentage: { type: Number, default: 10, min: 0, max: 100 },
-    },
-
-    // Platform Settings
-    platform: {
-      name: {
-        type: String,
-        default: 'GEOBUY Errands',
-      },
-      contactEmail: {
-        type: String,
-        default: 'support@geobuy.com',
-      },
-      contactPhone: {
-        type: String,
-        default: '+44 20 1234 5678',
-      },
-      currency: {
-        type: String,
-        default: 'GBP',
-      },
-      currencySymbol: {
-        type: String,
-        default: '£',
-      },
-      contactPhoneNG: {
-        type: String,
-        default: '+234 800 000 0000',
-      },
-      contactEmailNG: {
-        type: String,
-        default: 'support.ng@geobuy.com',
-      },
-      enabledCountries: {
-        type: [String],
-        default: ['GB', 'NG'],
-      },
-    },
-    
-    // Notification Settings
-    notifications: {
-      emailEnabled: {
-        type: Boolean,
-        default: true,
-      },
-      pushEnabled: {
-        type: Boolean,
-        default: true,
-      },
-    },
-    
-    // Feature Toggles
-    features: {
-      subscriptionsEnabled: {
-        type: Boolean,
-        default: true,
-      },
-      liveTrackingEnabled: {
-        type: Boolean,
-        default: true,
-      },
-      qrCodeEnabled: {
-        type: Boolean,
-        default: true,
-      },
-      negotiationEnabled: {
-        type: Boolean,
-        default: true,
-      },
-      // Customers pay when booking; runners only see paid errands.
-      requirePaymentBeforeAcceptance: {
-        type: Boolean,
-        default: true,
-      },
-      // Delivered errands the customer never confirms are completed
-      // automatically after this many hours (0 = never).
-      autoCompleteHours: {
-        type: Number,
-        default: 48,
-        min: 0,
-      },
-      // Nigeria payouts: admin approves, then Paystack sends the transfer.
-      paystackPayoutsEnabled: {
-        type: Boolean,
-        default: true,
-      },
-    },
-    
     updatedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -219,7 +107,7 @@ const settingsSchema = new mongoose.Schema(
 );
 
 // Only allow one settings document
-settingsSchema.statics.getSettings = async function() {
+settingsSchema.statics.getSettings = async function () {
   let settings = await this.findOne();
   if (!settings) {
     settings = await this.create({});

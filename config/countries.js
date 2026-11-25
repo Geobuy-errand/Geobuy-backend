@@ -17,15 +17,11 @@ const COUNTRIES = {
     paymentGateway: 'stripe',
     phonePrefix: '+44',
     geocodeCountryCode: 'gb',
-    // Average ratio of road distance to straight-line distance.
-    // Used only when no routing service is reachable.
-    roadFactor: 1.25,
-    // Average urban driving speed (km/h) used only as a last-resort ETA.
-    fallbackSpeedKmh: 30,
+    // Road factor, travel speed and prices are admin settings
+    // (defaults in config/settingsDefaults.js).
     bounds: { minLat: 49.8, maxLat: 60.95, minLng: -8.7, maxLng: 1.8 },
     defaultCenter: { lat: 51.5074, lng: -0.1278 }, // London
     timezone: 'Europe/London',
-    supportPhone: '+44 20 1234 5678',
   },
   NG: {
     code: 'NG',
@@ -39,12 +35,9 @@ const COUNTRIES = {
     paymentGateway: 'paystack',
     phonePrefix: '+234',
     geocodeCountryCode: 'ng',
-    roadFactor: 1.35,
-    fallbackSpeedKmh: 20, // Lagos/Abuja traffic
     bounds: { minLat: 4.0, maxLat: 14.0, minLng: 2.6, maxLng: 14.8 },
     defaultCenter: { lat: 6.5244, lng: 3.3792 }, // Lagos
     timezone: 'Africa/Lagos',
-    supportPhone: '+234 800 000 0000',
   },
 };
 

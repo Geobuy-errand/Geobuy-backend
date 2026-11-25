@@ -10,55 +10,11 @@ const SubscriptionPlan = require('../models/SubscriptionPlan.model');
 const { getCountry, normalizeCountry, kmToUnit } = require('../config/countries');
 const { round2 } = require('../utils/money');
 
-// Fallback values if a settings document is missing fields.
-const DEFAULT_PRICING = {
-  GB: {
-    baseFee: 3.99,
-    connectionFee: 1.99,
-    subscriptionDiscount: 20,
-    heavyItemFee: 2.99,
-    waitTimeFeePerMin: 0.3,
-    waitTimeFreeMin: 5,
-    peakUrgentFee: 1.99,
-    extraStopFee: 1.5,
-    platformFeePercentage: 20,
-    minimumFare: 0,
-    minWithdrawal: 10,
-    distanceMethod: 'road',
-    distanceMultiplier: 1,
-    providerCommissionPercentage: 10,
-    distanceTierMode: 'progressive',
-    distanceTiers: [
-      { upTo: 3, rate: 0.8 },
-      { upTo: 10, rate: 0.7 },
-      { upTo: 20, rate: 0.6 },
-      { upTo: null, rate: 0.5 },
-    ],
-  },
-  NG: {
-    baseFee: 1500,
-    connectionFee: 1000,
-    subscriptionDiscount: 20,
-    heavyItemFee: 1000,
-    waitTimeFeePerMin: 50,
-    waitTimeFreeMin: 10,
-    peakUrgentFee: 1000,
-    extraStopFee: 500,
-    platformFeePercentage: 20,
-    minimumFare: 0,
-    minWithdrawal: 1000,
-    distanceMethod: 'haversine',
-    distanceMultiplier: 1,
-    providerCommissionPercentage: 10,
-    distanceTierMode: 'progressive',
-    distanceTiers: [
-      { upTo: 5, rate: 200 },
-      { upTo: 15, rate: 150 },
-      { upTo: 30, rate: 120 },
-      { upTo: null, rate: 100 },
-    ],
-  },
-};
+const { COUNTRY_DEFAULTS, LIMITS } = require('../config/settingsDefaults');
+
+// Fallback values if a settings document is missing fields
+// (single source: config/settingsDefaults.js).
+const DEFAULT_PRICING = COUNTRY_DEFAULTS;
 
 const num = (v, fallback) => (v === undefined || v === null || Number.isNaN(Number(v)) ? fallback : Number(v));
 
@@ -79,7 +35,17 @@ function normaliseTiers(raw, fallback) {
   return tiers;
 }
 
-/** Pricing config for a country, merged over the defaults. */
+const ENUMS = {
+  distanceMethod: ['road', 'haversine'],
+  distanceTierMode: ['progressive', 'flat'],
+};
+const clamp = (v, key) => (LIMITS[key] ? Math.min(LIMITS[key].max, Math.max(LIMITS[key].min, v)) : v);
+
+/**
+ * Pricing config for a country: every admin setting for that country,
+ * merged over the defaults. Adding a field to config/settingsDefaults.js
+ * (and the model) is enough for it to appear here.
+ */
 async function getPricing(country) {
   const code = normalizeCountry(country);
   const defaults = DEFAULT_PRICING[code];
@@ -87,27 +53,19 @@ async function getPricing(country) {
   const raw = code === 'NG' ? settings.pricingNG : settings.pricing;
   const p = raw ? (typeof raw.toObject === 'function' ? raw.toObject() : raw) : {};
 
-  return {
-    country: code,
-    currency: getCountry(code).currency,
-    distanceUnit: getCountry(code).distanceUnit,
-    baseFee: num(p.baseFee, defaults.baseFee),
-    connectionFee: num(p.connectionFee, defaults.connectionFee),
-    subscriptionDiscount: num(p.subscriptionDiscount, defaults.subscriptionDiscount),
-    heavyItemFee: num(p.heavyItemFee, defaults.heavyItemFee),
-    waitTimeFeePerMin: num(p.waitTimeFeePerMin, defaults.waitTimeFeePerMin),
-    waitTimeFreeMin: num(p.waitTimeFreeMin, defaults.waitTimeFreeMin),
-    peakUrgentFee: num(p.peakUrgentFee, defaults.peakUrgentFee),
-    extraStopFee: num(p.extraStopFee, defaults.extraStopFee),
-    platformFeePercentage: num(p.platformFeePercentage, defaults.platformFeePercentage),
-    minimumFare: num(p.minimumFare, defaults.minimumFare),
-    minWithdrawal: num(p.minWithdrawal, defaults.minWithdrawal),
-    distanceMethod: ['road', 'haversine'].includes(p.distanceMethod) ? p.distanceMethod : defaults.distanceMethod,
-    distanceMultiplier: Math.min(3, Math.max(1, num(p.distanceMultiplier, defaults.distanceMultiplier))),
-    providerCommissionPercentage: num(p.providerCommissionPercentage, defaults.providerCommissionPercentage),
-    distanceTierMode: p.distanceTierMode || defaults.distanceTierMode,
-    distanceTiers: normaliseTiers(p.distanceTiers, defaults.distanceTiers),
-  };
+  const out = { country: code, currency: getCountry(code).currency, distanceUnit: getCountry(code).distanceUnit };
+  for (const [key, def] of Object.entries(defaults)) {
+    if (key === 'distanceTiers') out.distanceTiers = normaliseTiers(p.distanceTiers, def);
+    else if (ENUMS[key]) out[key] = ENUMS[key].includes(p[key]) ? p[key] : def;
+    else if (typeof def === 'number') out[key] = clamp(num(p[key], def), key);
+    else out[key] = p[key] ?? def;
+  }
+  // a band that can't be satisfied falls back to the defaults
+  if (out.negotiationMinPercent > out.negotiationMaxPercent) {
+    out.negotiationMinPercent = defaults.negotiationMinPercent;
+    out.negotiationMaxPercent = defaults.negotiationMaxPercent;
+  }
+  return out;
 }
 
 /**

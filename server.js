@@ -74,6 +74,8 @@ app.use(cookieParser());
 app.post('/api/subscription/webhook', express.raw({ type: 'application/json' }), webhookController.handleWebhook);
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), webhookController.handleWebhook);
 app.post('/api/webhooks/paystack', express.raw({ type: '*/*' }), paystackWebhookController.handleWebhook);
+// Didit (UK identity checks) — signed raw body
+app.post('/api/webhooks/didit', express.raw({ type: '*/*' }), require('./controllers/identity.controller').diditWebhook);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

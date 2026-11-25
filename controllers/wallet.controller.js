@@ -53,6 +53,7 @@ exports.getWallet = async (req, res) => {
       currency: wallet.currency || getCountry(country).currency,
       country,
       minWithdrawal: pricing.minWithdrawal,
+      maxWithdrawal: pricing.maxWithdrawal, // 0 = no limit
       onHold,
       onHoldJobs: (errandsHeld[0]?.count || 0) + (servicesHeld[0]?.count || 0),
       // balance = withdrawable now; pendingBalance = withdrawals being paid out
@@ -183,6 +184,9 @@ exports.requestWithdrawal = async (req, res) => {
 
     if (amount < pricing.minWithdrawal) {
       return res.status(400).json({ message: `Minimum withdrawal amount is ${formatMoney(pricing.minWithdrawal, c.currency)}` });
+    }
+    if (pricing.maxWithdrawal > 0 && amount > pricing.maxWithdrawal) {
+      return res.status(400).json({ message: `Maximum withdrawal per request is ${formatMoney(pricing.maxWithdrawal, c.currency)}` });
     }
 
     const bank = user.bankDetails || {};

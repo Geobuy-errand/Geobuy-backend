@@ -1,9 +1,9 @@
 const Connection = require('../models/Connection.model');
 const User = require('../models/User.model');
 const Payment = require('../models/Payment.model');
-const Settings = require('../models/Setting.model');
 const createNotification = require('../utils/create-notification');
 const pricingService = require('../services/pricingService');
+const settingsService = require('../services/settingsService');
 const { countryOfUser } = require('../config/countries');
 const { formatMoney } = require('../utils/money');
 const { NG_REGIONS, UK_REGIONS, canonicalRegion } = require('../config/locations');
@@ -56,10 +56,11 @@ exports.payConnectionFee = async (req, res) => {
         });
       }
   
-      // Get settings for fee
-      const settings = await Settings.getSettings();
-      const CONNECTION_FEE = settings.pricing?.connectionFee || 1.99;
-      const PLATFORM_FEE_PERCENTAGE = settings.pricing?.platformFeePercentage || 20;
+      // Fee for the user's country (Admin → Settings)
+      // NOTE: this handler is not routed — real payments use the Stripe/Paystack checkout.
+      const feePricing = await pricingService.getPricing(countryOfUser(req.user));
+      const CONNECTION_FEE = feePricing.connectionFee;
+      const PLATFORM_FEE_PERCENTAGE = feePricing.platformFeePercentage;
   
       // Calculate platform fee and provider amount
       const platformFeeAmount = CONNECTION_FEE * (PLATFORM_FEE_PERCENTAGE / 100);
@@ -73,7 +74,7 @@ exports.payConnectionFee = async (req, res) => {
         amount: CONNECTION_FEE,
         providerAmount: providerAmount,
         platformFee: platformFeeAmount,
-        currency: 'GBP',
+        currency: feePricing.currency,
         type: 'connection_fee',
         status: 'succeeded', // ✅ Use 'succeeded' instead of 'completed'
         paymentMethod: paymentMethod || 'stripe',
@@ -297,7 +298,7 @@ exports.createConnection = async (req, res) => {
         },
         userHasPaidConnectionFee: true,
         status: 'pending',
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        expiresAt: settingsService.daysFromNow((await settingsService.getOperations()).connectionExpiryDays),
       });
   
       await connection.save();

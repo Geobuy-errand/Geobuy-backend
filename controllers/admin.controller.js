@@ -47,6 +47,7 @@ exports.adminLogin = async (req, res) => {
 
     res.json({
       message: 'Login successful',
+      token, // see auth.controller: needed for Safari/iOS
       user: {
         id: user._id,
         fullName: user.fullName,

@@ -13,6 +13,7 @@ const money = (amount) => {
 // ============================================================
 
 const sendEmail = require("../services/email.service");
+const { OPERATIONS_DEFAULTS } = require("../config/settingsDefaults");
 const authTemplates = {
   // Customer registration welcome
   welcomeCustomer: (userName, email) => ({
@@ -573,7 +574,8 @@ const verificationTemplates = {
 
 const supportTemplates = {
   // Support ticket created
-  ticketCreated: (userName, ticketId, subject) => ({
+  // responseHours: Admin → Settings → operations.supportResponseHours
+  ticketCreated: (userName, ticketId, subject, responseHours = OPERATIONS_DEFAULTS.supportResponseHours) => ({
     subject: `🎫 Support Ticket Created - #${ticketId}`,
     title: "Support Ticket Created 🎫",
     content: `
@@ -583,7 +585,7 @@ const supportTemplates = {
           <p><strong>Ticket ID:</strong> ${ticketId}</p>
           <p><strong>Subject:</strong> ${subject}</p>
         </div>
-        <p>Our team will respond within 24 hours.</p>
+        <p>Our team will respond within ${responseHours} hours.</p>
       `,
   }),
 
@@ -951,6 +953,17 @@ const sendTemplateEmail = async (
   button = null,
   from = "info"
 ) => {
+  // Admin → Settings → "Email notifications" switch
+  try {
+    const Settings = require("../models/Setting.model");
+    const settings = await Settings.getSettings();
+    if (settings.notifications?.emailEnabled === false) {
+      console.log(`📧 Email notifications are turned off in admin settings — not sending "${subject}"`);
+      return false;
+    }
+  } catch (e) {
+    // settings unavailable: send as normal
+  }
   const html = buildEmailTemplate(title, content, button);
   return await sendEmail({ to, subject, html, from });
 };

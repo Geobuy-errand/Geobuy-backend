@@ -3,6 +3,7 @@ const { NG_REGIONS, canonicalRegion } = require('../config/locations');
 const Connection = require('../models/Connection.model');
 const createNotification = require('../utils/create-notification');
 const { sendTemplateEmail, connectionTemplates } = require('../utils/email-templates');
+const settingsService = require('../services/settingsService');
 
 // ============================================================
 // GET USER POSTS (Based on their state)
@@ -86,7 +87,7 @@ exports.createPost = async (req, res) => {
       time,
       imageUrl,
       isFeatured: isFeatured || false,
-      expiresAt: expiresAt || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      expiresAt: expiresAt || settingsService.daysFromNow((await settingsService.getOperations()).connectPostExpiryDays),
       tags: tags || [],
       createdBy: req.user._id,
     });

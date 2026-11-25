@@ -4,16 +4,57 @@ const Errand = require('../models/Errand.model');
 const User = require('../models/User.model');
 const Notification = require('../models/Notification.model');
 const createNotification = require('../utils/create-notification');
+const pricingService = require('../services/pricingService');
+const settingsService = require('../services/settingsService');
+const { formatMoney } = require('../utils/money');
+
+const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+
+/**
+ * Negotiation rules for an errand, all from Admin → Settings:
+ * on/off switch, the allowed price band (% of the quoted price), how long
+ * offers stay open and the platform fee used to split an agreed price.
+ */
+async function negotiationRules(errand) {
+  const country = errand.country || 'GB';
+  const [pricing, ops, features] = await Promise.all([
+    pricingService.getPricing(country),
+    settingsService.getOperations(),
+    settingsService.getFeatures(),
+  ]);
+  const quoted = Number(errand.total || errand.estimatedPrice?.total || 0);
+  return {
+    enabled: features.negotiationEnabled !== false,
+    min: quoted ? round2((quoted * pricing.negotiationMinPercent) / 100) : 0,
+    max: quoted ? round2((quoted * pricing.negotiationMaxPercent) / 100) : Infinity,
+    offerHours: ops.negotiationOfferExpiryHours,
+    platformFeePercentage: pricing.platformFeePercentage,
+    currency: pricing.currency,
+  };
+}
+
+/** Error message if an amount is outside the allowed band, else null. */
+function outsideBand(amount, rules) {
+  if (amount < rules.min || amount > rules.max) {
+    return `Offers must be between ${formatMoney(rules.min, rules.currency)} and ${formatMoney(rules.max, rules.currency)} for this errand.`;
+  }
+  return null;
+}
 
 // Submit an offer for an errand (Provider)
 exports.submitOffer = async (req, res) => {
   try {
-    const { errandId, amount, message, expiresInHours = 24 } = req.body;
+    const { errandId, amount, message, expiresInHours } = req.body;
     const providerId = req.user._id;
 
     const errand = await Errand.findById(errandId);
     if (!errand) {
       return res.status(404).json({ message: 'Errand not found' });
+    }
+
+    const rules = await negotiationRules(errand);
+    if (!rules.enabled) {
+      return res.status(403).json({ message: 'Price negotiation is currently turned off' });
     }
 
     // Check if errand is open for offers
@@ -39,6 +80,11 @@ exports.submitOffer = async (req, res) => {
     if (amount <= 0) {
       return res.status(400).json({ message: 'Offer amount must be greater than 0' });
     }
+    const bandError = outsideBand(Number(amount), rules);
+    if (bandError) return res.status(400).json({ message: bandError, min: rules.min, max: rules.max });
+
+    // Offers stay open for the admin-set time (a shorter time may be requested)
+    const hours = Math.min(Number(expiresInHours) || rules.offerHours, rules.offerHours);
 
     // Add offer
     errand.offers.push({
@@ -47,7 +93,7 @@ exports.submitOffer = async (req, res) => {
       message: message || '',
       status: 'pending',
       offeredAt: new Date(),
-      expiresAt: new Date(Date.now() + expiresInHours * 60 * 60 * 1000),
+      expiresAt: settingsService.hoursFromNow(hours),
     });
 
     errand.negotiationStatus = 'negotiating';
@@ -131,9 +177,10 @@ exports.acceptOffer = async (req, res) => {
     errand.negotiationStatus = 'accepted';
     errand.total = offer.amount;
 
-    // Calculate revenue split
-    errand.platformFee = Math.round((offer.amount * 0.20) * 100) / 100; // 20%
-    errand.providerAmount = Math.round((offer.amount * 0.80) * 100) / 100; // 80%
+    // Revenue split at the platform fee set in admin (was hard-coded 20/80)
+    const { platformFeePercentage } = await negotiationRules(errand);
+    errand.platformFee = round2((offer.amount * platformFeePercentage) / 100);
+    errand.providerAmount = round2(offer.amount - errand.platformFee);
 
     await errand.save();
 
@@ -248,6 +295,13 @@ exports.counterOffer = async (req, res) => {
     if (!isCustomer && !isProvider) {
       return res.status(403).json({ message: 'Access denied' });
     }
+
+    const rules = await negotiationRules(errand);
+    if (!rules.enabled) {
+      return res.status(403).json({ message: 'Price negotiation is currently turned off' });
+    }
+    const bandError = outsideBand(Number(amount), rules);
+    if (bandError) return res.status(400).json({ message: bandError, min: rules.min, max: rules.max });
 
     // Add counter offer
     offer.counterOffers.push({

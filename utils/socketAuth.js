@@ -145,6 +145,9 @@ function registerSocketHandlers(io, socket) {
     const lat = Number(data.lat);
     const lng = Number(data.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    // Admin → Settings → "Live tracking" switch
+    const features = await require('../services/settingsService').getFeatures();
+    if (features.liveTrackingEnabled === false) return;
     io.to(room).emit('runner-location', { errandId: data.errandId, lat, lng, at: new Date() });
   });
 }

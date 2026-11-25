@@ -31,7 +31,7 @@ function requireSeedAccess({ destructive = false } = {}) {
     if (secret && safeEqual(req.headers['x-seed-secret'], secret)) return next();
 
     try {
-      const token = req.cookies?.token;
+      const token = require('./auth.middleware').tokenFromRequest(req);
       if (!token) return res.status(401).json({ message: 'Authentication required' });
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const user = await User.findById(decoded.userId || decoded.id).select('role isActive');

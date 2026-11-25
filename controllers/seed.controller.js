@@ -31,81 +31,17 @@ const log = (message, type = 'info') => {
 // 1. Seed Settings
 const seedSettings = async () => {
   log('Seeding Settings...', 'step');
-  
   try {
-    let settings = await Settings.findOne();
-    
-    if (!settings) {
-      settings = new Settings({
-        pricing: {
-          baseFee: 3.99,
-          connectionFee: 1.99,
-          subscriptionDiscount: 20,
-          heavyItemFee: 2.99,
-          waitTimeFeePerMin: 0.30,
-          waitTimeFreeMin: 5,
-          peakUrgentFee: 1.99,
-          extraStopFee: 1.50,
-          platformFeePercentage: 20,
-          distanceTiers: {
-            tier1: { maxMiles: 3, ratePerMile: 0.80 },
-            tier2: { maxMiles: 10, ratePerMile: 0.70 },
-            tier3: { maxMiles: 20, ratePerMile: 0.60 },
-            tier4: { ratePerMile: 0.50 },
-          },
-        },
-        platform: {
-          name: 'GEOBUY Errands',
-          contactEmail: 'support@geobuy.com',
-          contactPhone: '+44 20 1234 5678',
-          currency: 'GBP',
-          currencySymbol: '£',
-        },
-        features: {
-          subscriptionsEnabled: true,
-          liveTrackingEnabled: true,
-          qrCodeEnabled: true,
-          negotiationEnabled: true,
-        },
-      });
-      
-      await settings.save();
-      log('Settings created successfully', 'success');
-      return { success: true, message: 'Settings created' };
-    } else {
-      let updated = false;
-      
-      if (!settings.pricing?.connectionFee) {
-        settings.pricing.connectionFee = 1.99;
-        updated = true;
-      }
-      
-      if (!settings.pricing?.platformFeePercentage) {
-        settings.pricing.platformFeePercentage = 20;
-        updated = true;
-      }
-      
-      if (!settings.features) {
-        settings.features = {
-          subscriptionsEnabled: true,
-          liveTrackingEnabled: true,
-          qrCodeEnabled: true,
-          negotiationEnabled: true,
-        };
-        updated = true;
-      }
-      
-      if (updated) {
-        await settings.save();
-        log('Settings updated with missing fields', 'success');
-        return { success: true, message: 'Settings updated' };
-      }
-      
-      log('Settings already exist', 'info');
-      return { success: true, message: 'Settings already exist' };
-    }
+    // All defaults come from config/settingsDefaults.js via the model.
+    // An existing settings document is kept; new fields get their defaults
+    // automatically when it is loaded and saved.
+    const existed = await Settings.findOne();
+    const settings = await Settings.getSettings();
+    await settings.save();
+    log(existed ? 'Settings checked (missing fields filled with defaults)' : 'Settings created', 'success');
+    return { success: true, message: existed ? 'Settings up to date' : 'Settings created' };
   } catch (error) {
-    log(`Settings seeding failed: ${error.message}`, 'error');
+    log(`Error seeding settings: ${error.message}`, 'error');
     return { success: false, message: error.message };
   }
 };

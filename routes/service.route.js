@@ -32,6 +32,7 @@ router.delete('/categories/:id', authMiddleware, requireRole('admin'), ServiceCo
 router.post('/quote', authMiddleware, requireRole('provider'), ServiceController.submitQuote);
 router.post('/quote/negotiate', authMiddleware, requireRole('customer', 'provider'), ServiceController.negotiateQuote);
 router.post('/quote/accept', authMiddleware, requireRole('customer'), ServiceController.acceptQuote);
+router.post('/quote/accept-counter', authMiddleware, requireRole('provider'), ServiceController.acceptCounterOffer);
 router.post('/quote/reject', authMiddleware, requireRole('customer', 'provider'), ServiceController.rejectQuote);
 router.get('/request/:requestId/quotes', authMiddleware, ServiceController.getQuotesForRequest);
 

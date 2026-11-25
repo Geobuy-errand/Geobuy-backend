@@ -23,6 +23,7 @@
 
 const axios = require('axios');
 const { haversineKm } = require('../utils/haversine');
+const { COUNTRY_DEFAULTS } = require('../config/settingsDefaults');
 const gazetteer = require('../config/gazetteer');
 const {
   getCountry,
@@ -40,9 +41,8 @@ const NOMINATIM_UA = () =>
 
 const HTTP_TIMEOUT_MS = 6000;
 
-// Durations from OSRM / straight-line estimates ignore traffic.
-// These multipliers bring them closer to real-world times.
-const TRAFFIC_MULTIPLIER = { GB: 1.2, NG: 1.6 };
+// Road factor, fallback speed and traffic multiplier are admin settings
+// (Admin → Settings → Pricing, per country) — see distanceConfig().
 
 // ------------------------------------------------------------
 // Small TTL cache so repeated quotes don't hammer free APIs
@@ -110,24 +110,30 @@ function pointFromGeoJSON(location) {
  * Lazy require: pricingService loads Settings, and nothing there needs geoService.
  */
 async function distanceConfig(country, override = {}) {
-  if (override.method) {
-    return { method: override.method, multiplier: Number(override.multiplier) || 1 };
-  }
+  const code = normalizeCountry(country);
+  const d = COUNTRY_DEFAULTS[code];
+  let p = {};
   try {
-    const pricing = await require('./pricingService').getPricing(country);
-    return { method: pricing.distanceMethod, multiplier: pricing.distanceMultiplier };
+    p = await require('./pricingService').getPricing(code);
   } catch (e) {
-    return { method: normalizeCountry(country) === 'NG' ? 'haversine' : 'road', multiplier: 1 };
+    // settings unavailable — defaults below
   }
+  return {
+    method: override.method || p.distanceMethod || d.distanceMethod,
+    multiplier: Number(override.method ? override.multiplier : p.distanceMultiplier) || 1,
+    roadFactor: Number(p.roadFactor) || d.roadFactor,
+    speedKmh: Number(p.fallbackSpeedKmh) || d.fallbackSpeedKmh,
+    traffic: Number(p.trafficMultiplier) || d.trafficMultiplier,
+  };
 }
 
 /** Straight-line route using the Haversine formula. */
-function haversineRoute(a, b, country, multiplier = 1) {
-  const c = getCountry(country);
+function haversineRoute(a, b, country, multiplier = 1, speedKmh) {
+  const speed = Number(speedKmh) || COUNTRY_DEFAULTS[normalizeCountry(country)].fallbackSpeedKmh;
   const straight = haversineKm(a, b);
   const km = straight * (multiplier || 1);
-  // ETA: straight-line distance at the country's typical urban speed.
-  const minutes = Math.max(1, (km / c.fallbackSpeedKmh) * 60);
+  // ETA: distance at the country's typical urban speed (admin setting).
+  const minutes = Math.max(1, (km / speed) * 60);
   return { distanceKm: km, durationMin: minutes, straightLineKm: straight, source: 'haversine', multiplier };
 }
 
@@ -140,11 +146,12 @@ function cacheKey(a, b, mode) {
   return `${a.lat.toFixed(5)},${a.lng.toFixed(5)}|${b.lat.toFixed(5)},${b.lng.toFixed(5)}|${mode}`;
 }
 
-function estimate(a, b, country) {
-  const c = getCountry(country);
+/** Road-distance estimate when no routing service answers (cfg from distanceConfig). */
+function estimate(a, b, country, cfg) {
+  const d = COUNTRY_DEFAULTS[normalizeCountry(country)];
   const straight = haversineKm(a, b);
-  const km = straight * c.roadFactor;
-  const minutes = Math.max(3, (km / c.fallbackSpeedKmh) * 60);
+  const km = straight * (cfg?.roadFactor || d.roadFactor);
+  const minutes = Math.max(3, (km / (cfg?.speedKmh || d.fallbackSpeedKmh)) * 60);
   return { distanceKm: km, durationMin: minutes, straightLineKm: straight, source: 'estimate' };
 }
 
@@ -230,10 +237,11 @@ async function getRoute(from, to, { country = 'GB', mode = 'driving', method, mu
 
   if (cfg.method === 'haversine') {
     // Pure maths — no cache or network needed, and always the same answer.
-    return finalize(haversineRoute(a, b, code, cfg.multiplier), code);
+    return finalize(haversineRoute(a, b, code, cfg.multiplier, cfg.speedKmh), code);
   }
 
-  const key = cacheKey(a, b, mode);
+  // settings are part of the key so admin changes apply immediately
+  const key = `${cacheKey(a, b, mode)}|${cfg.roadFactor}|${cfg.speedKmh}|${cfg.traffic}`;
   const cached = routeCache.get(key);
   if (cached) return cached;
 
@@ -255,7 +263,7 @@ async function getRoute(from, to, { country = 'GB', mode = 'driving', method, mu
   if (!result) {
     try {
       result = await osrmRoute(a, b, mode);
-      result.durationMin *= TRAFFIC_MULTIPLIER[code] || 1;
+      result.durationMin *= cfg.traffic;
     } catch (e) {
       console.warn('[geo] OSRM routing failed:', e.message);
     }
@@ -270,7 +278,7 @@ async function getRoute(from, to, { country = 'GB', mode = 'driving', method, mu
 
   if (!result) {
     // fallbackSpeedKmh already reflects typical traffic — no extra multiplier.
-    result = estimate(a, b, code);
+    result = estimate(a, b, code, cfg);
   }
 
   result.straightLineKm = straight;
@@ -296,13 +304,13 @@ async function getDistancesFrom(origin, destinations, { country = 'GB', mode = '
 
   const cfg = await distanceConfig(code, { method, multiplier });
   if (cfg.method === 'haversine') {
-    for (const { p, i } of valid) out[i] = finalize(haversineRoute(a, p, code, cfg.multiplier), code);
+    for (const { p, i } of valid) out[i] = finalize(haversineRoute(a, p, code, cfg.multiplier, cfg.speedKmh), code);
     return out;
   }
 
   // Straight-line estimate first; refined below where possible.
   for (const { p, i } of valid) {
-    out[i] = finalize(estimate(a, p, code), code);
+    out[i] = finalize(estimate(a, p, code, cfg), code);
   }
 
   const chunk = (arr, n) => arr.reduce((acc, x, idx) => (idx % n ? acc[acc.length - 1].push(x) : acc.push([x]), acc), []);
@@ -353,7 +361,7 @@ async function getDistancesFrom(origin, destinations, { country = 'GB', mode = '
           out[i] = finalize(
             {
               distanceKm: d / 1000,
-              durationMin: (t / 60) * (TRAFFIC_MULTIPLIER[code] || 1),
+              durationMin: (t / 60) * cfg.traffic,
               source: 'osrm',
               straightLineKm: straight,
             },

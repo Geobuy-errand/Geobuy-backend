@@ -3,10 +3,21 @@ const QRCode = require('qrcode');
 const crypto = require('crypto');
 const Notification = require('../models/Notification.model');
 const { uploadFile } = require('../middleware/upload');
+const settingsService = require('../services/settingsService');
+
+/** QR code rules from Admin → Settings (on/off switch and expiry). */
+async function qrRules() {
+  const [ops, features] = await Promise.all([settingsService.getOperations(), settingsService.getFeatures()]);
+  return { enabled: features.qrCodeEnabled !== false, hours: ops.qrCodeExpiryHours };
+}
 
 // Generate QR code for an errand
 exports.generateQRCode = async (req, res) => {
   try {
+    const rules = await qrRules();
+    if (!rules.enabled) {
+      return res.status(403).json({ message: 'QR code verification is currently turned off' });
+    }
     const { id } = req.params;
     const userId = req.user._id;
 
@@ -58,7 +69,7 @@ exports.generateQRCode = async (req, res) => {
       verificationToken: verificationToken,
       qrDataUrl: dataUrl,
       generatedAt: new Date(),
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+      expiresAt: settingsService.hoursFromNow(rules.hours),
       scanCount: errand.qrCode?.scanCount || 0,
       isVerified: errand.qrCode?.isVerified || false,
     };
@@ -87,6 +98,10 @@ exports.generateQRCode = async (req, res) => {
 // Scan QR code (Provider)
 exports.scanQRCode = async (req, res) => {
   try {
+    const rules = await qrRules();
+    if (!rules.enabled) {
+      return res.status(403).json({ message: 'QR code verification is currently turned off' });
+    }
     const { id } = req.params;
     const { qrData } = req.body;
     const providerId = req.user._id;
@@ -130,9 +145,9 @@ exports.scanQRCode = async (req, res) => {
       return res.status(400).json({ message: 'Invalid or outdated QR code. Ask the customer to show the latest code.' });
     }
 
-    // Check if QR has expired (24 hours)
+    // Check if QR has expired (admin-set hours)
     const tokenAge = Date.now() - new Date(parsedData.timestamp).getTime();
-    if (tokenAge > 24 * 60 * 60 * 1000) {
+    if (tokenAge > rules.hours * settingsService.HOUR) {
       return res.status(400).json({ message: 'QR code has expired' });
     }
 

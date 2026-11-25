@@ -20,6 +20,18 @@ const quoteSchema = new mongoose.Schema(
       type: String,
       maxlength: 500,
     },
+    // Negotiation: the provider's first price, who made the latest offer
+    // (the other side must respond) and how many counter-offers were made.
+    originalAmount: Number,
+    lastOfferBy: {
+      type: String,
+      enum: ['provider', 'customer'],
+      default: 'provider',
+    },
+    counterCount: {
+      type: Number,
+      default: 0,
+    },
     estimatedDuration: {
       type: Number, // in hours
     },

@@ -120,10 +120,12 @@ exports.registerCustomer = async (req, res) => {
 
     await user.save();
 
-    res.cookie("token", signToken(user), COOKIE_OPTIONS());
+    const authToken = signToken(user);
+    res.cookie("token", authToken, COOKIE_OPTIONS());
     await sendWelcome(authTemplates.welcomeCustomer, email, fullName);
 
     res.status(201).json({
+      token: authToken, // for Safari/iOS (see login)
       message: "Customer registered successfully",
       user: {
         id: user._id,
@@ -236,12 +238,13 @@ exports.registerProvider = async (req, res) => {
 
     await wallet.save();
 
-    res.cookie("token", signToken(user), COOKIE_OPTIONS());
+    const authToken = signToken(user);
+    res.cookie("token", authToken, COOKIE_OPTIONS());
     await sendWelcome(authTemplates.welcomeProvider, email, fullName);
 
     res.status(201).json({
+      token: authToken, // for Safari/iOS (see login)
       message: "Provider registered successfully",
-      // token,
       user: {
         id: user._id,
         fullName: user.fullName,
@@ -367,10 +370,12 @@ exports.registerErrandRunner = async (req, res) => {
 
     await wallet.save();
 
-    res.cookie("token", signToken(user), COOKIE_OPTIONS());
+    const authToken = signToken(user);
+    res.cookie("token", authToken, COOKIE_OPTIONS());
     await sendWelcome(authTemplates.welcomeErrandRunner, email, fullName);
 
     res.status(201).json({
+      token: authToken, // for Safari/iOS (see login)
       message: "Errand runner registered successfully. Awaiting verification.",
       user: {
         id: user._id,
@@ -417,9 +422,13 @@ exports.login = async (req, res) => {
       });
     }
 
-    res.cookie("token", signToken(user), COOKIE_OPTIONS());
+    const authToken = signToken(user);
+    res.cookie("token", authToken, COOKIE_OPTIONS());
 
     res.json({
+      // Also returned in the body: Safari/iOS blocks cross-site cookies, so the
+      // app sends this back as "Authorization: Bearer <token>".
+      token: authToken,
       message: "Login successful",
       user: {
         id: user._id,
