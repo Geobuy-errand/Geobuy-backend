@@ -1,13 +1,14 @@
 // ============================================================
 // Identity checks for providers and errand runners.
 //
-//   Nigeria → Dojah NIN lookup (instant: we compare the name / date of birth
-//             on the NIN record with the account).
-//   UK      → Didit hosted ID document + selfie check (the person is sent to
+// One vendor, Didit, for both countries:
+//   Nigeria → NIN checked against the NIMC database (instant; Didit compares
+//             the name and date of birth on the NIN record with the account).
+//   UK      → hosted ID document + selfie check (the person is sent to
 //             Didit, the result comes back by webhook or when they return).
 //
-// VERIFICATION_MOCK=true in .env passes every check without calling a vendor,
-// so the app can be tested before the Dojah / Didit keys are in. (In mock
+// VERIFICATION_MOCK=true in .env passes every check without calling Didit,
+// so the app can be tested before the keys are in. (In mock
 // mode the NIN 00000000000 is "not found", to test the failure screens.)
 //
 // Admin → Settings → Verification decides whether it's required, who pays
@@ -20,12 +21,11 @@ const User = require('../models/User.model');
 const settingsService = require('./settingsService');
 const createNotification = require('../utils/create-notification');
 const { countryOfUser, getCountry } = require('../config/countries');
-const dojah = require('./verification/dojah');
 const didit = require('./verification/didit');
 
 const isMock = () => ['1', 'true', 'yes', 'on'].includes(String(process.env.VERIFICATION_MOCK || '').toLowerCase());
 
-const vendorFor = (country) => (isMock() ? 'mock' : country === 'NG' ? 'dojah' : 'didit');
+const vendorFor = () => (isMock() ? 'mock' : 'didit');
 
 const ROLES = ['provider', 'errand_runner'];
 
@@ -162,38 +162,43 @@ async function runNinCheck(check, user, nin) {
     return check;
   }
 
-  let record;
-  if (check.vendor === 'mock') {
-    if (String(nin) === '00000000000') record = null;
-    else {
-      const parts = tokens(user.fullName);
-      record = { firstName: parts[0] || 'Test', lastName: parts[parts.length - 1] || 'User', middleName: '', dateOfBirth: toYmd(user.dateOfBirth) };
-    }
-  } else {
-    record = await dojah.lookupNin(nin);
-  }
+  // Name on the account, split for the NIMC lookup
+  const parts = String(user.fullName || '').trim().split(/\s+/).filter(Boolean);
+  const firstName = parts[0] || '';
+  const lastName = parts.length > 1 ? parts[parts.length - 1] : parts[0] || '';
+  const dob = toYmd(user.dateOfBirth);
 
-  if (!record) {
-    check.status = 'declined';
-    check.result = { nameMatch: 'none', dobMatch: 'unknown', reason: 'We could not find that NIN. Check the 11 digits and try again.' };
+  if (check.vendor === 'mock') {
+    if (String(nin) === '00000000000') {
+      check.status = 'declined';
+      check.result = { nameMatch: 'none', dobMatch: 'unknown', vendorStatus: 'Declined (mock)', reason: 'We could not find that NIN. Check the 11 digits and try again.' };
+    } else {
+      check.status = 'approved';
+      check.result = { firstName, lastName, dateOfBirth: dob, nameMatch: 'full', dobMatch: dob ? 'match' : 'unknown', vendorStatus: 'Approved (mock)' };
+    }
     check.completedAt = new Date();
     return check;
   }
 
-  const nm = nameMatch(user.fullName, record);
-  const dm = dobMatch(user.dateOfBirth, record.dateOfBirth);
-  let status;
-  let reason;
-  if (nm === 'full' && dm !== 'mismatch') status = 'approved';
-  else if (nm === 'none') {
-    status = 'declined';
-    reason = 'The name on this NIN does not match the name on your account.';
-  } else {
-    status = 'in_review';
-    reason = nm === 'partial' ? 'Only part of the name matches the NIN record' : 'The date of birth does not match the NIN record';
-  }
-  check.status = status;
-  check.result = { firstName: record.firstName, lastName: record.lastName, middleName: record.middleName, dateOfBirth: toYmd(record.dateOfBirth), nameMatch: nm, dobMatch: dm, reason };
+  // Didit checks the NIN against NIMC and compares the name / date of birth
+  const r = await didit.validateNin({ nin, firstName, lastName, dateOfBirth: dob || undefined, vendorData: check._id });
+  const nameMatchValue = r.matchType === 'full_match' ? 'full' : r.matchType === 'partial_match' ? 'partial' : 'none';
+  check.status = r.status;
+  check.result = {
+    firstName: r.recordFirstName,
+    lastName: r.recordLastName,
+    nameMatch: nameMatchValue,
+    dobMatch: dob ? 'n/a' : 'unknown',
+    vendorStatus: `${r.vendorStatus || ''}${r.matchType ? ` (${r.matchType}${r.nameScore != null ? `, name score ${r.nameScore}` : ''})` : ''}`.trim(),
+    reason:
+      r.status === 'approved'
+        ? undefined
+        : !r.ninMatched
+        ? 'We could not find that NIN. Check the 11 digits and try again.'
+        : r.status === 'declined'
+        ? 'The name on this NIN does not match the name on your account.'
+        : 'Only part of the name matches the NIN record',
+  };
   check.completedAt = new Date();
   return check;
 }

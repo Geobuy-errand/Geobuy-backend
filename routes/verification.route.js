@@ -5,7 +5,7 @@ const VerificationController = require('../controllers/verification.controller')
 const { upload } = require('../middleware/upload');
 const IdentityController = require('../controllers/identity.controller');
 
-// Automated identity check (Dojah NIN for Nigeria, Didit ID + selfie for the UK)
+// Automated identity check with Didit (NIN for Nigeria, ID + selfie for the UK)
 router.get('/identity/status', authMiddleware, requireRole('provider', 'errand_runner'), IdentityController.getStatus);
 router.post('/identity/start', authMiddleware, requireRole('provider', 'errand_runner'), IdentityController.start);
 router.post('/identity/confirm-payment', authMiddleware, requireRole('provider', 'errand_runner'), IdentityController.confirmPayment);

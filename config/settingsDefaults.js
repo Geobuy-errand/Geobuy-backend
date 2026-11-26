@@ -118,7 +118,7 @@ const PLATFORM_DEFAULTS = {
 };
 
 // Identity checks for providers and errand runners.
-//   NG: NIN lookup with Dojah.  UK: ID document + selfie with Didit.
+//   Didit for both: NG = NIN checked against NIMC, UK = ID document + selfie.
 //   Set VERIFICATION_MOCK=true in .env to pass every check until real keys are in.
 const VERIFICATION_DEFAULTS = {
   requiredForProviders: true, // providers can't quote until verified

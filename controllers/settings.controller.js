@@ -70,7 +70,7 @@ exports.getSettings = async (req, res) => {
           requiredForRunners: v.requiredForRunners,
           paidBy: v.paidBy,
           fee: country === 'NG' ? v.feeNG : v.feeGB,
-          provider: country === 'NG' ? 'dojah' : 'didit',
+          provider: 'didit',
         };
       })(),
     });

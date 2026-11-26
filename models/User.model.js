@@ -100,7 +100,7 @@ const userSchema = new mongoose.Schema(
     rejectionReason: String,
     verificationRequestedAt: Date,
     verificationReviewedAt: Date,
-    // Automated identity check (Dojah NIN in Nigeria, Didit ID + selfie in the UK)
+    // Automated identity check with Didit (NIN in Nigeria, ID + selfie in the UK)
     identityVerified: { type: Boolean, default: false },
     identityVerifiedAt: Date,
     identityCheckStatus: String,

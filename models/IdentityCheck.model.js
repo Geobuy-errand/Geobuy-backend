@@ -1,13 +1,13 @@
 const mongoose = require('mongoose');
 
 // One automated identity check for a provider or errand runner.
-//   NG: NIN lookup with Dojah (instant).  UK: ID document + selfie with Didit (hosted).
+//   Didit for both: NG = NIN checked against NIMC (instant), UK = ID document + selfie (hosted).
 const identityCheckSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     role: { type: String, enum: ['provider', 'errand_runner'] },
     country: { type: String, enum: ['GB', 'NG'], required: true },
-    vendor: { type: String, enum: ['dojah', 'didit', 'mock', 'manual'], required: true },
+    vendor: { type: String, enum: ['didit', 'mock', 'manual'], required: true },
     status: {
       type: String,
       enum: ['awaiting_payment', 'awaiting_start', 'pending', 'in_review', 'approved', 'declined', 'error', 'cancelled'],
